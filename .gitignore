@@ -102,3 +102,20 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+###############
+
+logs/
+logs_jobs/
+plots/
+memory_check.py
+
+DEMNUni*/
+
+srs_env/
+
+#TODO: readd these 2 later
+commands/
+job_scripts/
+
+requirements.txt
