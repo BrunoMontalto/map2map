@@ -94,6 +94,9 @@ def gpu_worker(local_rank, node, args):
         pin_memory=True,
     )
 
+    if rank == 0:
+        print("train dataset size: {}".format(len(train_loader.dataset)))
+
     if args.val:
         val_dataset = FieldDataset(
             in_patterns=args.val_in_patterns,
@@ -183,7 +186,12 @@ def gpu_worker(local_rank, node, args):
 
     if (args.load_state == ckpt_link and not os.path.isfile(ckpt_link)
             or not args.load_state):
+        
         if args.init_weight_std is not None:
+
+            if rank == 0:
+                print('no state to load, initializing model weights', flush=True)
+                
             model.apply(init_weights)
 
             if args.adv:
@@ -288,13 +296,18 @@ def gpu_worker(local_rank, node, args):
                     'adv_scheduler': adv_scheduler.state_dict(),
                 })
 
-            state_file = 'state_{}.pt'.format(epoch + 1)
+            # get state folder from args.states_folder
+            state_file = os.path.join(args.states_folder, 'state_{}.pt'.format(epoch + 1))
             torch.save(state, state_file)
             del state
 
-            tmp_link = '{}.pt'.format(time.time())
+            #tmp_link = '{}.pt'.format(time.time())
+
+            """
+            tmp_link = os.path.join(args.states_folder, '{}.pt'.format(time.time()))
             os.symlink(state_file, tmp_link)  # workaround to overwrite
             os.rename(tmp_link, ckpt_link)
+            """ # NOTE: disabled checkpoints to avoid unintentional load-state
 
     dist.destroy_process_group()
 
@@ -468,34 +481,35 @@ def train(epoch, loader, model, criterion, optimizer, scheduler,
                 global_step=epoch+1,
             )
 
-        skip_chan = 0
-        if args.adv and epoch >= args.adv_start and args.cgan:
-            skip_chan = sum(args.in_chan)
+        if epoch % args.tb_plt_interval == 0 or epoch == args.epochs - 1:
+            skip_chan = 0
+            if args.adv and epoch >= args.adv_start and args.cgan:
+                skip_chan = sum(args.in_chan)
 
-        fig = plt_slices(
-            input[-1], output[-1, skip_chan:], target[-1, skip_chan:],
-            output[-1, skip_chan:] - target[-1, skip_chan:],
-            title=['in', 'out', 'tgt', 'out - tgt'],
-            **args.misc_kwargs,
-        )
-        logger.add_figure('fig/train', fig, global_step=epoch+1)
-        fig.clf()
+            fig = plt_slices(
+                input[-1], output[-1, skip_chan:], target[-1, skip_chan:],
+                output[-1, skip_chan:] - target[-1, skip_chan:],
+                title=['in', 'out', 'tgt', 'out - tgt'],
+                **args.misc_kwargs,
+            )
+            logger.add_figure('fig/train', fig, global_step=epoch+1)
+            fig.clf()
 
-        fig = plt_power(
-            input, output[:, skip_chan:], target[:, skip_chan:],
-            label=['in', 'out', 'tgt'],
-            **args.misc_kwargs,
-        )
-        logger.add_figure('fig/train/power/lag', fig, global_step=epoch+1)
-        fig.clf()
+            fig = plt_power(
+                input, output[:, skip_chan:], target[:, skip_chan:],
+                label=['in', 'out', 'tgt'],
+                **args.misc_kwargs,
+            )
+            logger.add_figure('fig/train/power/lag', fig, global_step=epoch+1)
+            fig.clf()
 
-        #fig = plt_power(1.0,
-        #    dis=[input, output[:, skip_chan:], target[:, skip_chan:]],
-        #    label=['in', 'out', 'tgt'],
-        #    **args.misc_kwargs,
-        #)
-        #logger.add_figure('fig/train/power/eul', fig, global_step=epoch+1)
-        #fig.clf()
+            #fig = plt_power(1.0,
+            #    dis=[input, output[:, skip_chan:], target[:, skip_chan:]],
+            #    label=['in', 'out', 'tgt'],
+            #    **args.misc_kwargs,
+            #)
+            #logger.add_figure('fig/train/power/eul', fig, global_step=epoch+1)
+            #fig.clf()
 
     return epoch_loss
 

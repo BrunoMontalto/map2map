@@ -1,7 +1,7 @@
 import numpy as np
 
 ### revisited version of pos2dis and dis2pos functions that work with more than 3 channels ###
-def pos2dis(pos, boxsize, Ng):
+def pos2dis_(pos, boxsize, Ng):
     cellsize = boxsize / Ng
     lattice = np.arange(Ng) * cellsize + 0.5 * cellsize
 
@@ -14,7 +14,7 @@ def pos2dis(pos, boxsize, Ng):
     return pos
 
 
-def dis2pos(dis_field, boxsize, Ng):
+def dis2pos_(dis_field, boxsize, Ng):
     cellsize = boxsize / Ng
     lattice = np.arange(Ng) * cellsize + 0.5 * cellsize
 
@@ -33,7 +33,7 @@ def dis2pos(dis_field, boxsize, Ng):
 
 
 
-def _pos2dis(pos, boxsize, Ng):
+def pos2dis(pos, boxsize, Ng):
     """Assume `pos` is ordered in `pid` that aligns with the Lagrangian lattice,
     and all displacement must not exceed half box size.
     """
@@ -49,7 +49,7 @@ def _pos2dis(pos, boxsize, Ng):
     return pos
 
 
-def _dis2pos(dis_field,boxsize,Ng):
+def dis2pos(dis_field,boxsize,Ng):
     """Assume 'dis_field' is in order of `pid` that aligns with the Lagrangian lattice,
     and dis_field.shape = (3,Ng,Ng,Ng)
     dd"""
@@ -85,10 +85,10 @@ if __name__ == "__main__":
         
         pos = pos_vel[..., :3]
 
-        dis1 = pos2dis(pos, boxsize, Ng) # new on crop
-        dis2 = _pos2dis(pos, boxsize, Ng) # old on crop
+        dis1 = pos2dis_(pos, boxsize, Ng) # new on crop
+        dis2 = pos2dis(pos, boxsize, Ng) # old on crop
 
-        dis_vel = pos2dis(pos_vel, boxsize, Ng) 
+        dis_vel = pos2dis_(pos_vel, boxsize, Ng) 
         dis3 = dis_vel[..., :3] # new without crop
 
         assert np.allclose(dis1, dis2), "dis1 and dis2 are not equal!"
@@ -104,9 +104,9 @@ if __name__ == "__main__":
         dis1 = np.moveaxis(dis1, -1, 0)
 
 
-        pos1 = dis2pos(dis1, boxsize, Ng) # new on crop
-        pos2 = _dis2pos(dis1, boxsize, Ng) # old on crop
-        pos3 = dis2pos(dis_vel, boxsize, Ng) 
+        pos1 = dis2pos_(dis1, boxsize, Ng) # new on crop
+        pos2 = dis2pos(dis1, boxsize, Ng) # old on crop
+        pos3 = dis2pos_(dis_vel, boxsize, Ng) 
         pos3 = pos3[:3] # new without crop
 
         assert np.allclose(pos1, pos2), "pos1 and pos2 are not equal!"

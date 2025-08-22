@@ -109,8 +109,15 @@ logs/
 logs_jobs/
 plots/
 memory_check.py
+preprocess_mp.py
 
 DEMNUni*/
+_DEMNUni*/
+
+*states*/
+checkpoint.pt
+runs*/
+
 
 srs_env/
 
@@ -119,3 +126,4 @@ commands/
 job_scripts/
 
 requirements.txt
+notes.txt

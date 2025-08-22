@@ -95,6 +95,14 @@ def add_common_args(parser):
             'norms. Be careful with name collisions')
 
 
+    #add argument for folder where to save states
+    parser.add_argument('--states-folder', type=str, default='states',
+            help='folder to save the states of model during training.')
+
+    #add argument for tensor board matplotlib plots inveterval
+    parser.add_argument('--tb-plt-interval', type=int, default=10, help = 'interval (epochs) between matplotlib plots in tensorboard. Default is 10 epochs.')
+
+
 def add_train_args(parser):
     add_common_args(parser)
 

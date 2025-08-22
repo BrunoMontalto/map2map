@@ -27,36 +27,50 @@ def process_snapshot(folder_path, train, Ng_HR, Ng_LR, output_folder, downsampli
     s = pynbody.load(os.path.join(folder_path, 'snapdir_062', 'snap_062'))
 
     # use physical units
-    s.physical_units() 
+    if args.use_physical_units:
+        s.physical_units()
 
     boxsize = s.properties['boxsize']
 
     print("Boxsize:", boxsize, "type:", type(boxsize))
     print("Boxsize units:", boxsize._register_unit)
 
-    # convert boxsize to float32
-    boxsize = np.float32(boxsize.in_units('kpc'))
+    print("Boxsize in kpc/h:", boxsize.in_units("kpc a h**-1"))
+    print("Boxsize in Mpc/h:", boxsize.in_units("Mpc a h**-1"))
+    print("Boxsize in Gpc/h:", boxsize.in_units("Gpc a h**-1"))
+
+
+    # convert boxsize to float32 and to Mpc/h
+    boxsize = np.float32(boxsize) / 1000.0 # convert to Mpc a h**-1, assuming boxsize is in kpc a h**-1
     print("Boxsize after conversion:", boxsize, "type:", type(boxsize))
 
     pos_ = s['pos']
-    print("\nPositions shape:", pos_.shape, "type:", type(pos_), "dtype:", pos_.dtype, "units:", pos_.units)
+    # divide pos by 1000 to convert from kpc/h to Mpc/h, assuming pos is in kpc a h**-1
+    pos_ = s['pos'] / 1000.0 # convert to Mpc a h**-1
+    print("\nPositions shape:", pos_.shape, "type:", type(pos_), "dtype:", pos_.dtype, "units:", pos_.units, "min:", pos_.min(), "max:", pos_.max())
 
     vel_ = s['vel']
-    print("Velocities shape:", vel_.shape, "type:", type(vel_), "dtype:", vel_.dtype, "units:", vel_.units)
+    
+    print("Velocities shape:", vel_.shape, "type:", type(vel_), "dtype:", vel_.dtype, "units:", vel_.units, "min:", vel_.min(), "max:", vel_.max())
+
 
     if use_iord:
         pid_ = s['iord'] - 1 # iord starts at 1, so we subtract 1 to make it zero-indexed
         #print("Min iord:", pid_.min())
         #print("Max iord:", pid_.max())
         #print("Len iord:", len(pid_))
+
+        assert len(pos_) == len(vel_) == len(pid_), "Positions, velocities and particle IDs must have the same length."
     else:
         pid_ = None
+
+        assert len(pos_) == len(vel_), "Positions and velocities must have the same length."
 
     
 
 
 
-    assert len(pos_) == len(vel_) == len(pid_), "Positions, velocities and particle IDs must have the same length."
+    
 
     Ng = round(len(pos_)** (1/3)) # number of particles per side of the grid
 
@@ -107,6 +121,8 @@ def process_snapshot(folder_path, train, Ng_HR, Ng_LR, output_folder, downsampli
     if Ng != Ng_HR:
         factor = Ng // Ng_HR
         catnorm_HR = downsampling_function(catnorm_HR, factor)
+    else:
+        print("No downsampling needed for HR data, using original resolution.")
 
     assert catnorm_HR.shape == (6, Ng_HR, Ng_HR, Ng_HR), f"catnorm_HR shape is {catnorm_HR.shape}, expected {(6, Ng_HR, Ng_HR, Ng_HR)}"
 
@@ -121,6 +137,7 @@ def process_snapshot(folder_path, train, Ng_HR, Ng_LR, output_folder, downsampli
     # save to output folder
     output_path = os.path.join(output_folder, 'train' if train else 'test')
 
+    """
     # HR
     hr_folder = os.path.join(output_path, 'HR')
     np.save(os.path.join(hr_folder, f"{folder_name}.npy"), catnorm_HR)
@@ -128,6 +145,21 @@ def process_snapshot(folder_path, train, Ng_HR, Ng_LR, output_folder, downsampli
     # LR
     lr_folder = os.path.join(output_path, 'LR')
     np.save(os.path.join(lr_folder, f"{folder_name}.npy"), catnorm_LR)
+    """
+
+    #save the first 3 channels (displacement) and the last 3 channels (velocity) separately (add a suffix to the filename)
+
+    #HR
+    hr_folder = os.path.join(output_path, 'HR')
+    os.makedirs(hr_folder, exist_ok=True)
+    np.save(os.path.join(hr_folder, f"{folder_name}_dis.npy"), catnorm_HR[:3])
+    np.save(os.path.join(hr_folder, f"{folder_name}_vel.npy"), catnorm_HR[3:])
+
+    #LR
+    lr_folder = os.path.join(output_path, 'LR')
+    os.makedirs(lr_folder, exist_ok=True)
+    np.save(os.path.join(lr_folder, f"{folder_name}_dis.npy"), catnorm_LR[:3])
+    np.save(os.path.join(lr_folder, f"{folder_name}_vel.npy"), catnorm_LR[3:])
 
     del catnorm_HR, catnorm_LR
     del s
@@ -137,18 +169,21 @@ def process_snapshot(folder_path, train, Ng_HR, Ng_LR, output_folder, downsampli
 
     print(f"Processed {folder_path}:\n")
 
-    """
-    if delete_files:
-        print("Deleting files in the snapshot folder...\n")
-        #delete files
-        folder_path = os.path.join(folder_path, 'snapdir_062')
-        for file in os.listdir(folder_path):
-            file_path = os.path.join(folder_path, file)
-            if os.path.isfile(file_path):
+    
+    if delete_files: #NOTE: this deletes all the folder contents, but not the folder itself
+        #delete folder path
+        print(f"Deleting folder {folder_path}...")
+        for root, dirs, files in os.walk(folder_path, topdown=False):
+            for name in files:
+                file_path = os.path.join(root, name)
+                print(f"Deleting file {file_path}...")
                 os.remove(file_path)
-                print(f"Deleted file: {file_path}")
-        print("\n")
-    """
+            for name in dirs:
+                dir_path = os.path.join(root, name)
+                print(f"Deleting directory {dir_path}...")
+                os.rmdir(dir_path)
+        print(f"Folder {folder_path} deleted.\n")
+    
 
 
 
@@ -157,20 +192,21 @@ def process_snapshot(folder_path, train, Ng_HR, Ng_LR, output_folder, downsampli
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Converts simulation data to displacement fields and performs downsampling for training/testing pairs.')
-    parser.add_argument('--train_patterns', type=str, required=True, help='Regular expression for training input folders.')
-    parser.add_argument('--test_patterns', type=str, required=True, help='Regular expression for testing input folders.')
-    parser.add_argument('--output_folder', type=str, required=True, help='Output folder for processed data.')
-    parser.add_argument('--Ng_HR', type=int, required = True, help='Number of particles per side of the HR grid.')
-    parser.add_argument('--Ng_LR', type=int, required=True, help='Number of particles per side of the LR grid.')
+    parser.add_argument('--train-pattern', type=str, required=True, help='Regular expression for training input folders.')
+    parser.add_argument('--test-pattern', type=str, required=True, help='Regular expression for testing input folders.')
+    parser.add_argument('--output-folder', type=str, required=True, help='Output folder for processed data.')
+    parser.add_argument('--Ng-HR', type=int, required = True, help='Number of particles per side of the HR grid.')
+    parser.add_argument('--Ng-LR', type=int, required=True, help='Number of particles per side of the LR grid.')
 
     # add argument for downsampling method
-    parser.add_argument('--downsampling_method', type=str, choices=['random', 'tricubic'], default='random', help='Method for downsampling the data. Default is "random".')
+    parser.add_argument('--downsampling-method', type=str, choices=['random', 'tricubic'], default='random', help='Method for downsampling the data. Default is "random".')
+
+    parser.add_argument('--use-physical-units', action='store_true', help='Use physical units for the simulation data. Default is False.')
 
     # add "use_iord" argument
-    parser.add_argument('--use_iord', action='store_true', help='Use iord to order the particles. Default is False.')
+    parser.add_argument('--use-iord', action='store_true', help='Use iord to order the particles. Default is False.')
 
-    parser.add_argument('--delete_files', action='store_true', help='Delete original snapshot files after processing.')
-
+    parser.add_argument('--delete-files', action='store_true', help='Delete original snapshot files after processing.')
     args = parser.parse_args()
 
     # create output directories
@@ -182,12 +218,13 @@ if __name__ == "__main__":
 
     print(f"Preprocessing started at {datetime.datetime.now()}\n")
 
-    print(f"Train patterns: {args.train_patterns}")
-    print(f"Test patterns: {args.test_patterns}")
+    print(f"Train pattern: {args.train_pattern}")
+    print(f"Test pattern: {args.test_pattern}")
     print(f"Output folder: {args.output_folder}")
     print(f"HR Ng: {args.Ng_HR}")
     print(f"LR Ng: {args.Ng_LR}")
     print(f"Downsampling method: {args.downsampling_method}")
+    print(f"Use physical units: {args.use_physical_units}")
     print(f"Use iord: {args.use_iord}")
     print(f"Delete original files after processing: {args.delete_files}")
 
@@ -203,7 +240,7 @@ if __name__ == "__main__":
         downsampling_function = downsample_tricubic
 
     # process training data
-    train_folders = glob(args.train_patterns)
+    train_folders = glob(args.train_pattern)
     print(f"Found {len(train_folders)} training folders.\n\n")
     for folder in train_folders:
         print(f"Processing training folder: {folder}\n")
@@ -213,7 +250,7 @@ if __name__ == "__main__":
         #    log_file.write(f"Error processing {folder}: {e}\n")
 
     # process testing data
-    test_folders = glob(args.test_patterns)
+    test_folders = glob(args.test_pattern)
     print(f"Found {len(test_folders)} testing folders.\n\n")
     for folder in test_folders:
         print(f"Processing testing folder: {folder}\n")
@@ -223,5 +260,3 @@ if __name__ == "__main__":
         #    log_file.write(f"Error processing {folder}: {e}\n")
 
     print(f"Preprocessing finished at {datetime.datetime.now()}\n\n")
-
-
