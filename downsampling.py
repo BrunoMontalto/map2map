@@ -11,25 +11,60 @@ def random_sample_fixed_seed(seed):
 
 def random_sample(x, factor, seed=42):
     channels = x.shape[0]
-    Ng_lr = x.shape[1] // factor  # Nuova dimensione della griglia a bassa risoluzione
+    Ng_lr = x.shape[1] // factor  
 
-    #store old random state
+    # store old random state
     old_state = np.random.get_state()
 
     np.random.seed(seed)
-    # Genera un array di indici casuali per ciascun asse (x, y, z)
+    # generate random offset for each dimension
     offsets = np.random.randint(0, factor, size=(3, Ng_lr, Ng_lr, Ng_lr))
 
-    # Restore old random state
+    # restore old random state
     np.random.set_state(old_state)
     
-    # Crea una griglia di indici ridotti (in base al fattore 'factor')
+    # sample
     grid_indices = np.indices((Ng_lr, Ng_lr, Ng_lr))
     i_indices = grid_indices[0] * factor + offsets[0]
     j_indices = grid_indices[1] * factor + offsets[1]
     k_indices = grid_indices[2] * factor + offsets[2]
 
-    # Usa gli indici per campionare l'array originale
+    
+    downsampled = x[:, i_indices, j_indices, k_indices]
+    
+    return downsampled
+
+
+def unstructured_random_sample_fixed_seed(seed):
+    """ returns an unstructured_random_sample function with fixed seed """
+
+    def wrapper(x, factor):
+        return unstructured_random_sample(x, factor, seed=seed)
+
+    return wrapper
+
+
+def unstructured_random_sample(x, factor, seed=42):
+    channels, Ng, _, _ = x.shape
+    Ng_lr = Ng // factor
+
+    # store old random state
+    old_state = np.random.get_state()
+
+    np.random.seed(seed)
+    # generate random offset for each dimension
+    total_points = Ng_lr ** 3
+    all_indices = np.array(np.meshgrid(np.arange(Ng), np.arange(Ng), np.arange(Ng), indexing='ij')).reshape(3, -1).T
+    chosen_indices = all_indices[np.random.choice(all_indices.shape[0], size=total_points, replace=False)]
+    
+    i_indices = chosen_indices[:, 0].reshape(Ng_lr, Ng_lr, Ng_lr)
+    j_indices = chosen_indices[:, 1].reshape(Ng_lr, Ng_lr, Ng_lr)
+    k_indices = chosen_indices[:, 2].reshape(Ng_lr, Ng_lr, Ng_lr)
+
+    # restore old random state
+    np.random.set_state(old_state)
+    
+    # sample
     downsampled = x[:, i_indices, j_indices, k_indices]
     
     return downsampled
@@ -67,8 +102,28 @@ def downsample_tricubic(x, factor):
 
     return downsampled
 
+def random_sample_with_batch(x, factor):
+    batch_size, channels, N, _, _ = x.shape
+    Ng_lr = N // factor
 
-def compute_metrics(original, downsampled, factor):
+    # generate random offset for each dimension
+    offsets = np.random.randint(0, factor, size=(3, Ng_lr, Ng_lr, Ng_lr))
+
+    # sample
+    grid_indices = np.indices((Ng_lr, Ng_lr, Ng_lr))
+    i_indices = grid_indices[0] * factor + offsets[0]
+    j_indices = grid_indices[1] * factor + offsets[1]
+    k_indices = grid_indices[2] * factor + offsets[2]
+
+
+    downsampled = np.empty((batch_size, channels, Ng_lr, Ng_lr, Ng_lr), dtype=x.dtype)
+    for b in range(batch_size):
+        downsampled[b] = x[b, :, i_indices, j_indices, k_indices]
+
+    return downsampled
+
+
+def compute_metrics(original, downsampled, factor): # for unit testing
     expected_sum = np.sum(original) / (factor ** 3)
     expected_mean = np.mean(original)
     actual_sum = np.sum(downsampled)

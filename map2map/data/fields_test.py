@@ -47,38 +47,20 @@ class FieldDataset(Dataset):
                  in_norms=None, tgt_norms=None, callback_at=None,
                  augment=False, aug_shift=None, aug_add=None, aug_mul=None,
                  crop=None, crop_start=None, crop_stop=None, crop_step=None,
-                 in_pad=0, tgt_pad=0, scale_factor=1, mmap_only=False, load_all=False, dataset_reduce_fac=1, rank=0, use_pt = False,
+                 in_pad=0, tgt_pad=0, scale_factor=1, mmap_only=False, ignore_target=False,
                  **kwargs):
 
         self.mmap_only = mmap_only
-        self.load_all = load_all
-        self.use_pt = use_pt
+        self.ignore_target = ignore_target
+
+        print("ignore_target:", self.ignore_target)
 
         in_file_lists = [sorted(glob(p)) for p in in_patterns]
         self.in_files = list(zip(* in_file_lists))
 
-        tgt_file_lists = [sorted(glob(p)) for p in tgt_patterns]
-        self.tgt_files = list(zip(* tgt_file_lists))
-
-        if dataset_reduce_fac > 1:
-            if rank ==  0:
-                print(f'Reducing dataset size by a factor of {dataset_reduce_fac}. Original size: {len(self.in_files)}')
-            new_len = len(self.in_files) // dataset_reduce_fac
-            self.in_files = self.in_files[:new_len]
-            self.tgt_files = self.tgt_files[:new_len]
-
-            if rank == 0:
-                print(f'Reduced dataset size: {len(self.in_files)}')
-
-        if self.load_all:
-            self.in_data = [
-            [np.load(f).astype(np.float32) for f in fields]
-            for fields in self.in_files
-            ]
-            self.tgt_data = [
-                [np.load(f).astype(np.float32) for f in fields]
-                for fields in self.tgt_files
-            ]
+        if not self.ignore_target:
+            tgt_file_lists = [sorted(glob(p)) for p in tgt_patterns]
+            self.tgt_files = list(zip(* tgt_file_lists))
 
         """ add rank argument if you want to use this commented sanity check
         if rank == 0:
@@ -142,9 +124,9 @@ class FieldDataset(Dataset):
         """
                 
 
-
-        if len(self.in_files) != len(self.tgt_files):
-            raise ValueError('number of input and target fields do not match')
+        if not self.ignore_target:
+            if len(self.in_files) != len(self.tgt_files):
+                raise ValueError('number of input and target fields do not match')
         self.nfile = len(self.in_files)
 
         if self.nfile == 0:
@@ -153,8 +135,12 @@ class FieldDataset(Dataset):
 
         self.in_chan = [np.load(f, mmap_mode='r').shape[0]
                         for f in self.in_files[0]]
-        self.tgt_chan = [np.load(f, mmap_mode='r').shape[0]
-                         for f in self.tgt_files[0]]
+    
+        if not self.ignore_target:
+            self.tgt_chan = [np.load(f, mmap_mode='r').shape[0]
+                            for f in self.tgt_files[0]]
+        else:
+            self.tgt_chan = self.in_chan
 
         self.size = np.load(self.in_files[0][0], mmap_mode='r').shape[1:]
         self.size = np.asarray(self.size)
@@ -164,8 +150,9 @@ class FieldDataset(Dataset):
             raise ValueError('numbers of input normalization functions and fields do not match')
         self.in_norms = in_norms
 
-        if tgt_norms is not None and len(tgt_patterns) != len(tgt_norms):
-            raise ValueError('numbers of target normalization functions and fields do not match')
+        if not self.ignore_target:
+            if tgt_norms is not None and len(tgt_patterns) != len(tgt_norms):
+                raise ValueError('numbers of target normalization functions and fields do not match')
         self.tgt_norms = tgt_norms
 
         self.callback_at = callback_at
@@ -215,12 +202,14 @@ class FieldDataset(Dataset):
                 raise ValueError('pad and ndim mismatch')
             return pad.reshape(ndim, 2)
         self.in_pad = format_pad(in_pad, self.ndim)
-        self.tgt_pad = format_pad(tgt_pad, self.ndim)
+        if not self.ignore_target:
+            self.tgt_pad = format_pad(tgt_pad, self.ndim)
 
-        if scale_factor != 1:
-            tgt_size = np.load(self.tgt_files[0][0], mmap_mode='r').shape[1:]
-            if any(self.size * scale_factor != tgt_size):
-                raise ValueError('input size x scale factor != target size')
+        if not self.ignore_target:
+            if scale_factor != 1:
+                tgt_size = np.load(self.tgt_files[0][0], mmap_mode='r').shape[1:]
+                if any(self.size * scale_factor != tgt_size):
+                    raise ValueError('input size x scale factor != target size')
         self.scale_factor = scale_factor
 
         self.nsample = self.nfile * self.ncrop
@@ -228,12 +217,12 @@ class FieldDataset(Dataset):
         self.kwargs = kwargs
 
         self.assembly_line = {}
-
-        self.commonpath = os.path.commonpath(
-            file
-            for files in self.in_files[:2] + self.tgt_files[:2]
-            for file in files
-        )
+        if not self.ignore_target:
+            self.commonpath = os.path.commonpath(
+                file
+                for files in self.in_files[:2] + self.tgt_files[:2]
+                for file in files
+            )
 
     def __len__(self):
         return self.nsample
@@ -241,28 +230,19 @@ class FieldDataset(Dataset):
     def __getitem__(self, idx):
         ifile, icrop = divmod(idx, self.ncrop)
 
-
-        if not self.load_all:
-            # use memmap after reading a file once
-            if self.is_read_once[ifile] or self.mmap_only:
-                mmap_mode = 'r'
-            else:
-                mmap_mode = None
-                self.is_read_once[ifile] = True
-
-            if self.use_pt:
-                in_fields = [torch.load(f)
-                              for f in self.in_files[ifile]]
-                tgt_fields = [torch.load(f)
-                              for f in self.tgt_files[ifile]]
-            else:
-                in_fields = [np.load(f, mmap_mode=mmap_mode)
-                            for f in self.in_files[ifile]]
-                tgt_fields = [np.load(f, mmap_mode=mmap_mode)
-                            for f in self.tgt_files[ifile]]
+        # use memmap after reading a file once
+        if self.is_read_once[ifile] or self.mmap_only:
+            mmap_mode = 'r'
         else:
-            in_fields = self.in_data[ifile]
-            tgt_fields = self.tgt_data[ifile]
+            mmap_mode = None
+            self.is_read_once[ifile] = True
+
+        in_fields = [np.load(f, mmap_mode=mmap_mode)
+                     for f in self.in_files[ifile]]
+        
+        if not self.ignore_target:
+            tgt_fields = [np.load(f, mmap_mode=mmap_mode)
+                        for f in self.tgt_files[ifile]]
 
         anchor = self.anchors[icrop]
 
@@ -284,54 +264,69 @@ class FieldDataset(Dataset):
         crop(in_fields, anchor,
              self.crop[argsort_perm_axes],
              self.in_pad[argsort_perm_axes])
-        crop(tgt_fields, anchor * self.scale_factor,
-             self.crop[argsort_perm_axes] * self.scale_factor,
-             self.tgt_pad[argsort_perm_axes])
+        
+        if not self.ignore_target:
+            crop(tgt_fields, anchor * self.scale_factor,
+                self.crop[argsort_perm_axes] * self.scale_factor,
+                self.tgt_pad[argsort_perm_axes])
 
-        if not self.use_pt:
-            in_fields = [torch.from_numpy(f.astype(np.float32))
-                        for f in in_fields]
+        in_fields = [torch.from_numpy(f.astype(np.float32))
+                     for f in in_fields]
+        
+        if not self.ignore_target:
             tgt_fields = [torch.from_numpy(f.astype(np.float32))
-                      for f in tgt_fields]
-            
+                        for f in tgt_fields]
 
         if self.in_norms is not None:
             for norm, x in zip(self.in_norms, in_fields):
                 norm = import_attr(norm, norms, callback_at=self.callback_at)
                 norm(x, **self.kwargs)
-        if self.tgt_norms is not None:
-            for norm, x in zip(self.tgt_norms, tgt_fields):
-                norm = import_attr(norm, norms, callback_at=self.callback_at)
-                norm(x, **self.kwargs)
+
+        if not self.ignore_target:
+            if self.tgt_norms is not None:
+                for norm, x in zip(self.tgt_norms, tgt_fields):
+                    norm = import_attr(norm, norms, callback_at=self.callback_at)
+                    norm(x, **self.kwargs)
 
         if self.augment:
             flip_axes = flip(in_fields, None, self.ndim)
-            flip_axes = flip(tgt_fields, flip_axes, self.ndim)
+            if not self.ignore_target:
+                flip_axes = flip(tgt_fields, flip_axes, self.ndim)
 
             perm_axes = perm(in_fields, perm_axes, self.ndim)
-            perm_axes = perm(tgt_fields, perm_axes, self.ndim)
+            if not self.ignore_target:
+                perm_axes = perm(tgt_fields, perm_axes, self.ndim)
 
         if self.aug_add is not None:
             add_fac = add(in_fields, None, self.aug_add)
-            add_fac = add(tgt_fields, add_fac, self.aug_add)
+            if not self.ignore_target:
+                add_fac = add(tgt_fields, add_fac, self.aug_add)
 
         if self.aug_mul is not None:
             mul_fac = mul(in_fields, None, self.aug_mul)
-            mul_fac = mul(tgt_fields, mul_fac, self.aug_mul)
+            if not self.ignore_target:
+                mul_fac = mul(tgt_fields, mul_fac, self.aug_mul)
 
         in_fields = torch.cat(in_fields, dim=0)
-        tgt_fields = torch.cat(tgt_fields, dim=0)
+        if not self.ignore_target:
+            tgt_fields = torch.cat(tgt_fields, dim=0)
+        else:
+            tgt_fields = torch.zeros(3, 64, 64 ,64) #NOTE: hardcoded!
 
         #in_relpath = [os.path.relpath(file, start=self.commonpath)
         #              for file in self.in_files[ifile]]
-        tgt_relpath = [os.path.relpath(file, start=self.commonpath)
-                       for file in self.tgt_files[ifile]]
+        if not self.ignore_target:
+            tgt_relpath = [os.path.relpath(file, start=self.commonpath)
+                        for file in self.tgt_files[ifile]]
+        else:
+            tgt_relpath = torch.zeros(1)
 
         return {
             'input': in_fields,
             'target': tgt_fields,
             #'input_relpath': in_relpath,
             'target_relpath': tgt_relpath,
+            'anchor': anchor,
         }
 
     def assemble(self, label, chan, patches, paths):

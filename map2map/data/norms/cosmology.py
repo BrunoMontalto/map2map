@@ -18,8 +18,16 @@ def vel(x, undo=False, z=0.0, dis_std=6.0, **kwargs):
 
     x *= vel_norm
 
+def dis_not_in_place(x, undo=False, z=0.0, dis_std=6.0, **kwargs):
+    dis_norm = dis_std * D(z)  # [Mpc/h]
 
-def D(z, Om=0.31):
+    if not undo:
+        dis_norm = 1 / dis_norm
+
+    return x * dis_norm
+
+
+def D(z, Om=0.32):
     """linear growth function for flat LambdaCDM, normalized to 1 at redshift zero
     """
     OL = 1 - Om
@@ -27,7 +35,7 @@ def D(z, Om=0.31):
     return a * hyp2f1(1, 1/3, 11/6, - OL * a**3 / Om) \
              / hyp2f1(1, 1/3, 11/6, - OL / Om)
 
-def f(z, Om=0.31):
+def f(z, Om=0.32):
     """linear growth rate for flat LambdaCDM
     """
     OL = 1 - Om
@@ -36,7 +44,7 @@ def f(z, Om=0.31):
     return 1 - 6/11*aa3 * hyp2f1(2, 4/3, 17/6, -aa3) \
                         / hyp2f1(1, 1/3, 11/6, -aa3)
 
-def H(z, Om=0.31):
+def H(z, Om=0.32):
     """Hubble in [h km/s/Mpc] for flat LambdaCDM
     """
     OL = 1 - Om

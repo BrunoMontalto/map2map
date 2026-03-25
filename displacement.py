@@ -1,34 +1,36 @@
 import numpy as np
+from downsampling import average_downsample
 
-### revisited version of pos2dis and dis2pos functions that work with more than 3 channels ###
+### Revisited version of pos2dis and dis2pos functions that work with more than 3 channels ###
+
 def pos2dis_(pos, boxsize, Ng):
     cellsize = boxsize / Ng
-    lattice = np.arange(Ng) * cellsize + 0.5 * cellsize
+    lattice = np.arange(Ng) * cellsize + 0.5*cellsize
 
     pos[..., 0] -= lattice.reshape(-1, 1, 1) 
     pos[..., 1] -= lattice.reshape(-1, 1)
     pos[..., 2] -= lattice
 
-    # periodic boundary conditions on the first three channels only
+    # Periodic boundary conditions on the first three channels only
     pos[..., :3] -= np.rint(pos[..., :3] / boxsize) * boxsize
     return pos
 
 
 def dis2pos_(dis_field, boxsize, Ng):
     cellsize = boxsize / Ng
-    lattice = np.arange(Ng) * cellsize + 0.5 * cellsize
-
+    lattice = np.arange(Ng) * cellsize + 0.5*cellsize
     pos = dis_field.copy()
 
     pos[2] += lattice
     pos[1] += lattice.reshape(-1, 1)
     pos[0] += lattice.reshape(-1, 1, 1)
 
-    # safe in-place wrapping
+    # Safe in-place wrapping
     pos[:3] = np.where(pos[:3] < 0, pos[:3] + boxsize, pos[:3])
     pos[:3] = np.where(pos[:3] > boxsize, pos[:3] - boxsize, pos[:3])
 
     return pos
+
 ##############################################################################################
 
 
@@ -38,7 +40,7 @@ def pos2dis(pos, boxsize, Ng):
     and all displacement must not exceed half box size.
     """
     cellsize = boxsize / Ng
-    lattice = np.arange(Ng) * cellsize + 0.5 * cellsize
+    lattice = np.arange(Ng) * cellsize # assume particles are at the corner of the cell
 
     pos[..., 0] -= lattice.reshape(-1, 1, 1) 
     pos[..., 1] -= lattice.reshape(-1, 1)
@@ -52,9 +54,9 @@ def pos2dis(pos, boxsize, Ng):
 def dis2pos(dis_field,boxsize,Ng):
     """Assume 'dis_field' is in order of `pid` that aligns with the Lagrangian lattice,
     and dis_field.shape = (3,Ng,Ng,Ng)
-    dd"""
+    """
     cellsize = boxsize / Ng
-    lattice = np.arange(Ng) * cellsize + 0.5 * cellsize
+    lattice = np.arange(Ng) * cellsize # assume particles are at the corner of the cell
 
     pos = dis_field.copy()
 
@@ -68,14 +70,54 @@ def dis2pos(dis_field,boxsize,Ng):
     return pos
 
 
+
+"""
+def dis2posLR_average_downsample(dis_field,boxsize,Ng_LR, Ng_HR):
+    cellsize = boxsize / Ng_HR
+    ltc = np.arange(Ng_HR) * cellsize # assume particles are at the corner of the cell
+
+    lattice = np.empty((3, Ng_HR, Ng_HR, Ng_HR), dtype=dis_field.dtype)
+    lattice[0] = ltc.reshape(-1, 1, 1)
+    lattice[1] = ltc.reshape(-1, 1)
+    lattice[2] = ltc
+
+    lattice = average_downsample(lattice, Ng_HR // Ng_LR)
+
+    pos = dis_field.copy()
+
+    pos += lattice
+
+    pos[pos<0] += boxsize
+    pos[pos>boxsize] -= boxsize
+
+    return pos
+"""
+def dis2posLR_average_downsample(dis_field,boxsize,Ng_LR, Ng_HR):
+    """Assuming particles start at the origin corner of each grid cell, this function allows to correctly convert into positions a low resolution displacement field that is obtained through average downsampling.
+    """
+    cellsize = boxsize / Ng_LR
+    factor =  Ng_HR/Ng_LR
+    lattice = np.arange(Ng_LR) * cellsize + cellsize/(2*factor)  # assume particles are at the corner of the cell
+
+    pos = dis_field.copy()
+
+    pos[2] += lattice
+    pos[1] += lattice.reshape(-1, 1)
+    pos[0] += lattice.reshape(-1, 1, 1)
+
+    pos[pos<0] += boxsize
+    pos[pos>boxsize] -= boxsize
+
+    return pos
+
 if __name__ == "__main__":
-    # unit test for pos2dis and dis2pos
+    # Some unit test for pos2dis and dis2pos
     for i in range(10):
         Ng = 32
         boxsize = 100.0
         pos_vel = np.random.rand(Ng, Ng, Ng, 6) * boxsize
 
-        # offset some particles so that they are out of the box
+        # Offset some particles so that they are out of the box
         for i in range(Ng**3 // 10): #randomly offset 10% of the particles
             x = np.random.randint(0, Ng)
             y = np.random.randint(0, Ng)

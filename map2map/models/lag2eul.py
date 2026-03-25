@@ -132,3 +132,32 @@ def lag2eul(
         out.append(mesh)
 
     return out
+
+
+def inverse_pixel_shuffle_3d(x, scale):
+    """
+    Inverse pixel shuffle (space-to-depth) in 3D.
+
+    Args:
+        x: input tensor of shape (B, C, s*Nx, s*Ny, s*Nz)
+        scale: downscaling factor s
+
+    Returns:
+        Output tensor of shape (B, C*s^3, Nx, Ny, Nz)
+    """
+    B, C, D, H, W = x.shape
+    assert D % scale == 0 and H % scale == 0 and W % scale == 0, \
+        "Spatial dimensions must be divisible by scale"
+
+    x = x.view(B, C,
+               D // scale, scale,
+               H // scale, scale,
+               W // scale, scale)
+
+    # permute to bring scale dimensions next to channel
+    x = x.permute(0, 1, 3, 5, 7, 2, 4, 6)  # (B, C, s, s, s, D//s, H//s, W//s)
+
+    # merge scale and channel dimensions
+    x = x.reshape(B, C * scale**3, D // scale, H // scale, W // scale)
+
+    return x

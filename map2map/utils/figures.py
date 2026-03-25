@@ -6,10 +6,29 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, LogNorm, SymLogNorm
 from matplotlib.cm import ScalarMappable
+#from ...displacement import dis2pos
 plt.rc('text', usetex=False)
 
 from ..models import lag2eul, power
 
+
+def dis2pos(dis_field,boxsize,Ng): #from displacement.py
+    """Assume 'dis_field' is in order of `pid` that aligns with the Lagrangian lattice,
+    and dis_field.shape = (3,Ng,Ng,Ng)
+    """
+    cellsize = boxsize / Ng
+    lattice = np.arange(Ng) * cellsize # assume particles are at the corner of the cell
+
+    pos = dis_field.copy()
+
+    pos[2] += lattice
+    pos[1] += lattice.reshape(-1, 1)
+    pos[0] += lattice.reshape(-1, 1, 1)
+
+    pos[pos<0] += boxsize
+    pos[pos>boxsize] -= boxsize
+
+    return pos
 
 def quantize(x):
     return 2 ** round(log2(x), ndigits=1)
@@ -153,6 +172,12 @@ def plt_power(*fields, dis=None, label=None, **kwargs):
     ks = [k.cpu().numpy() for k in ks]
     Ps = [P.cpu().numpy() for P in Ps]
 
+    #normalize powers
+    #Ps = [P / np.max(P) for P in Ps]
+
+    #print('wavenumbers:', ks)
+    #print('powers:', Ps)
+
     fig, axes = plt.subplots(figsize=(4.8, 3.6), dpi=150)
 
     for k, P, l in zip(ks, Ps, label):
@@ -165,3 +190,149 @@ def plt_power(*fields, dis=None, label=None, **kwargs):
     fig.tight_layout()
 
     return fig
+
+
+def plt_pos_projections(*fields, boxsize, Ng, labels=None, **kwargs):
+    """
+    Converts displacement fields to position fields and plots their 2D projections in the X-Y, X-Z and Y-Z planes, as scatter plots.
+    Each of 3 projection per field is plotted in a separate column, labeled accordingly to the labels argument.
+
+    Each field should have a channel dimension with 3 channels, followed by 3 spatial dimensions.
+    Example of field: shape: (3, 64, 64, 64) where 3 channels are the 3 components of the displacement field.
+    """
+
+    plt.close('all')
+
+    assert all(isinstance(field, torch.Tensor) for field in fields)
+    assert all(field.shape[0] == 3 for field in fields), "Each field should have 3 channels (displacement components)."
+
+    fields = [field.detach().cpu().numpy() for field in fields]
+
+    nf = len(fields)
+
+    if labels is not None:
+        assert len(labels) == nf
+    else:
+        labels = [None] * nf
+
+    im_size = 4
+    fig, axes = plt.subplots(
+        1, nf,
+        squeeze=False,
+        figsize=(nf * im_size, im_size),
+        dpi=100,
+    )
+
+    for f, (field, label) in enumerate(zip(fields, labels)):
+        pos_field = dis2pos(field, boxsize, Ng)
+
+        # XY projection
+        axes[0, f].scatter(pos_field[0].flatten(), pos_field[1].flatten(), s=0.005, alpha=0.5)
+        axes[0, f].set_title(f'norm XY Projection {label if label else ""}')
+        axes[0, f].set_aspect('equal')  
+
+        """
+        # XZ projection
+        axes[1, f].scatter(pos_field[0].flatten(), pos_field[2].flatten(), s=0.005, alpha=0.5)
+        axes[1, f].set_title(f'norm XZ Projection {label if label else ""}')
+        axes[1, f].set_aspect('equal')
+
+        # YZ projection
+        axes[2, f].scatter(pos_field[1].flatten(), pos_field[2].flatten(), s=0.005, alpha=0.5)
+        axes[2, f].set_title(f'norm YZ Projection {label if label else ""}')
+        axes[2, f].set_aspect('equal')
+        """
+    fig.tight_layout()
+    return fig
+
+
+def test_plt_projections():
+    #create a random displacement field with shape (3,64,64,64)
+    field = torch.randn(3, 64, 64, 64)
+    field2 = torch.randn(3, 64, 64, 64) * 0.9
+    field3 = torch.randn(3, 64, 64, 64) * 1.1
+
+    boxsize = 50  # Mpc/h
+    Ng = 64
+
+    fig = plt_pos_projections(field, field2, field3, boxsize=boxsize, Ng=Ng, labels=['Random Field', 'Random Field 2', 'Random Field 3'])
+
+    #save fig
+    import os
+    os.makedirs('plots_temp', exist_ok=True)
+    fig.savefig('plots_temp/pos_projections.png', bbox_inches='tight')
+    plt.close(fig)
+
+if __name__ == '__main__':
+    test_plt_projections()
+    quit()
+    #test plt slices on DEMNUni_512_to_1024_averageDS_crop/train/
+    from ..data.norms import cosmology
+
+    """
+    #load DEMNUni_512_to_1024_averageDS_crop/train/LR/seed_123465_dis_crop_0000_0000_0000.npy
+    dis_LR = np.load('DEMNUni_512_to_1024_averageDS_crop/train/LR/seed_123465_dis_crop_0000_0000_0000.npy', mmap_mode='r')
+    vel_LR = np.load('DEMNUni_512_to_1024_averageDS_crop/train/LR/seed_123465_vel_crop_0000_0000_0000.npy', mmap_mode='r')
+
+    dis_HR = np.load('DEMNUni_512_to_1024_averageDS_crop/train/HR/seed_123465_dis_crop_0000_0000_0000.npy', mmap_mode='r')
+    vel_HR = np.load('DEMNUni_512_to_1024_averageDS_crop/train/HR/seed_123465_vel_crop_0000_0000_0000.npy', mmap_mode='r')
+    """
+
+    dis_LR = np.load('DEMNUni_512_to_1024_average/train/LR/seed_123465_dis.npy', mmap_mode='r')
+    vel_LR = np.load('DEMNUni_512_to_1024_average/train/LR/seed_123465_vel.npy', mmap_mode='r')
+
+    dis_HR = np.load('DEMNUni_512_to_1024_average/train/HR/seed_123465_dis.npy', mmap_mode='r')
+    vel_HR = np.load('DEMNUni_512_to_1024_average/train/HR/seed_123465_vel.npy', mmap_mode='r')
+
+    #print min and max of vel_HR
+    print('vel_HR min:', vel_HR.min())
+    print('vel_HR max:', vel_HR.max())
+
+    #crop a random 3x32x32x32 patch from each LR. Remember that LR dis (or vel) has shape [3, 132, 132, 132]
+    crop_size = 32
+
+    i = np.random.randint(0, 132 - crop_size)
+    j = np.random.randint(0, 132 - crop_size)
+    k = np.random.randint(0, 132 - crop_size)
+    dis_LR = dis_LR[:, i:i + crop_size, j:j + crop_size, k:k + crop_size]
+    vel_LR = vel_LR[:, i:i + crop_size, j:j + crop_size, k:k + crop_size]
+
+    dis_HR = dis_HR[:, i*2:i*2 + crop_size*2, j*2:j*2 + crop_size*2, k*2:k*2 + crop_size*2]
+    vel_HR = vel_HR[:, i*2:i*2 + crop_size*2, j*2:j*2 + crop_size*2, k*2:k*2 + crop_size*2]
+
+    #create a copy of the read values (since we don't want to modify the file)
+    dis_LR = dis_LR.copy()
+    vel_LR = vel_LR.copy()
+    dis_HR = dis_HR.copy()
+    vel_HR = vel_HR.copy()
+
+    #apply cosmology dis and vel
+    #cosmology.dis(dis_LR)
+    #cosmology.dis(dis_HR)
+    #cosmology.vel(vel_LR)
+    #cosmology.vel(vel_HR)
+
+    #to torch tensor
+    dis_LR = torch.from_numpy(dis_LR).float()
+    vel_LR = torch.from_numpy(vel_LR).float()
+    dis_HR = torch.from_numpy(dis_HR).float()
+    vel_HR = torch.from_numpy(vel_HR).float()
+
+    #concatenate in tensors with 6 channels
+    dis_vel_HR = torch.cat([dis_HR, vel_HR], dim=1)
+    dis_vel_LR = torch.cat([dis_LR, vel_LR], dim=1)
+
+    from ..models.resample import resample
+
+    dis_vel_LR = resample(dis_vel_LR,2, narrow=False)
+
+    fig = plt_slices(
+                dis_vel_LR, dis_vel_HR,
+                title=['in', 'tgt'],
+    )
+
+    #save fig
+    import os
+    os.makedirs('plots_temp', exist_ok=True)
+    fig.savefig('plots_temp/slices.png', bbox_inches='tight')
+    plt.close(fig)

@@ -21,9 +21,14 @@ def get_args():
         'test',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    estimate_gpu_mem_parser = subparsers.add_parser(
+        'estimate_gpu_mem',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
 
     add_train_args(train_parser)
     add_test_args(test_parser)
+    add_estimate_gpu_mem_args(estimate_gpu_mem_parser)
 
     args = parser.parse_args()
 
@@ -100,8 +105,11 @@ def add_common_args(parser):
             help='folder to save the states of model during training.')
 
     #add argument for tensor board matplotlib plots inveterval
-    parser.add_argument('--tb-plt-interval', type=int, default=10, help = 'interval (epochs) between matplotlib plots in tensorboard. Default is 10 epochs.')
+    parser.add_argument('--tb-plt-interval', type=int, default=1, help = 'interval (epochs) between matplotlib plots in tensorboard. Default is 10 epochs.')
 
+    #add argument for distributed training:
+    parser.add_argument('--not-distributed', action='store_true',
+            help='disable distributed training. Default is False')
 
 def add_train_args(parser):
     add_common_args(parser)
@@ -193,6 +201,61 @@ def add_train_args(parser):
             help='interval (batches) between logging training loss')
     parser.add_argument('--detect-anomaly', action='store_true',
             help='enable anomaly detection for the autograd engine')
+    
+
+    #add argument for tensorboard log folder
+    parser.add_argument('--tb-log-folder', type=str, default=None,
+            help='folder to save tensorboard logs. Default is None, which will use default SummaryWriter directory "runs"')
+
+    #add argument to always use mmap mode when loading data
+    parser.add_argument('--mmap-only', action='store_true',
+            help='always use mmap mode when loading data, (speed/memory tradeoff). Default is False')
+    
+    #add argument to load all data into memory
+    parser.add_argument('--load-all', action='store_true',
+            help='load all data into memory (default: False)')
+
+    #add lag2eul argument for conditional gan:
+    parser.add_argument('--lag2eul', action='store_true',
+            help='enable lag2eul for conditional GAN')
+    
+    #add argument for mesh-up-fac
+    parser.add_argument('--mesh-up-fac', type=int, default=2,
+                            help='mesh up factor for lag2eul')
+
+    parser.add_argument('--meshsize', type=int, default=1024,
+                            help='meshsize for lag2eul')
+    
+    #add argument for boxsize (for lag2eul)
+    parser.add_argument('--boxsize', type=float, default=1000.,
+                        help='box size in Mpc/h for lag2eul')
+
+    parser.add_argument('--always-condition-on-hr-l2e', action='store_true', help ='flag to always condition the discriminator on the high resolution (target) density field')
+    
+    #add argument to reduce dataset size (factor)
+    parser.add_argument('--dataset-reduce-fac', type=int, default=1,
+            help='factor by which to reduce dataset size (default: 1)')
+    
+    #add argument for lam
+    parser.add_argument('--adv-wgan-gp-lam', default=10, type=float,
+            help='lambda for WGAN-GP gradient penalty')
+
+    #add argument for power_loss
+    parser.add_argument('--power-loss-weight', default=0, type=float,
+            help='weight for power loss')
+    
+
+    parser.add_argument('--power-loss-skip-chan', type=int, default = 0, help='starting index for output and target vectors (that are in the form of [input, output (or target), output (or target) density field]). Set to 3 to compute power on displacements and densities (matter power spectrum). Set to 6 to compute matter power spectrum only. Set to 0 to include input (makes no sense since it is the same for output target, but is keept as default for retro-compatibility)')
+
+    parser.add_argument('--power-loss-skip-chan-end', type=int, default = None) #till the last channel
+
+    parser.add_argument('--lag2eul-loss-weight', default=0, type=float,
+            help='weight for lag2eul loss')
+    
+    #add argument for criterion loss after adv starts
+    parser.add_argument('--criterion-adv-weight', default=0, type=float,
+            help='weight for criterion loss after adversarial training starts')
+
 
 
 def add_test_args(parser):
@@ -207,6 +270,67 @@ def add_test_args(parser):
             help='number of CPU threads when cuda is unavailable. '
             'Default is the number of CPUs on the node by slurm')
 
+    parser.add_argument('--save-output', action='store_true',
+            help='save output fields to disk')
+    
+    parser.add_argument('--suffix', type=str, default="")
+
+def add_estimate_gpu_mem_args(parser):
+    add_common_args(parser)
+
+    parser.add_argument('--train-in-patterns', type=str_list, required=True,
+            help='comma-sep. list of glob patterns for training input data')
+    parser.add_argument('--train-tgt-patterns', type=str_list, required=True,
+            help='comma-sep. list of glob patterns for training target data')
+    
+
+    parser.add_argument('--adv-model', type=str,
+            help='discriminator model, disabled by default')
+    parser.add_argument('--adv-model-spectral-norm', action='store_true',
+            help='enable spectral normalization on the discriminator')
+    
+    parser.add_argument('--cgan', action='store_true',
+            help='enable conditional GAN')
+    
+    parser.add_argument('--instance-noise', default=0, type=float,
+            help='noise added to the adversary inputs to stabilize training')
+    parser.add_argument('--instance-noise-batches', default=1e4, type=float,
+            help='noise annealing duration')
+
+    parser.add_argument('--optimizer', default='Adam', type=str,
+            help='optimization algorithm')
+    
+    parser.add_argument('--optimizer-args', default='{}', type=json.loads,
+            help='optimizer arguments in addition to the learning rate, '
+            'e.g. --optimizer-args \'{"betas": [0.5, 0.9]}\'')
+    
+    parser.add_argument('--adv-optimizer-args', type=json.loads,
+            help='adversary optimizer arguments, default to --optimizer-args')
+    
+    parser.add_argument('--scheduler-args', default='{"verbose": true}',
+            type=json.loads,
+            help='arguments for the ReduceLROnPlateau scheduler')
+    
+    
+
+    parser.add_argument('--div-data', action='store_true',
+            help='enable data division among GPUs for better page caching. '
+            'Data division is shuffled every epoch. '
+            'Only relevant if there are multiple crops in each field')
+    parser.add_argument('--div-shuffle-dist', default=1, type=float,
+            help='distance to further shuffle cropped samples relative to '
+            'their fields, to be used with --div-data. '
+            'Only relevant if there are multiple crops in each file. '
+            'The order of each sample is randomly displaced by this value. '
+            'Setting it to 0 turn off this randomization, and setting it to N '
+            'limits the shuffling within a distance of N files. '
+            'Change this to balance cache locality and stochasticity')
+    parser.add_argument('--dist-backend', default='nccl', type=str,
+            choices=['gloo', 'nccl'], help='distributed backend')
+    parser.add_argument('--log-interval', default=100, type=int,
+            help='interval (batches) between logging training loss')
+    parser.add_argument('--detect-anomaly', action='store_true',
+            help='enable anomaly detection for the autograd engine')
 
 def str_list(s):
     return s.split(',')
