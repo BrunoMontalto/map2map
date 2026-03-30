@@ -5,8 +5,7 @@ import torch.nn.functional as F
 from torch import nn
 from tqdm import tqdm
 from .module_util import default
-from utils.sr_utils import SSIM, PerceptualLoss
-from utils.hparams import hparams
+from .sr_utils import SSIM, PerceptualLoss
 
 
 # gaussian diffusion trainer class
@@ -62,20 +61,21 @@ def cosine_beta_schedule(timesteps, s=0.008):
 
 
 class GaussianDiffusion(nn.Module):
-    def __init__(self, denoise_fn, rrdb_net, timesteps=1000, loss_type='l1'):
+    def __init__(self, args, denoise_fn, rrdb_net, timesteps=1000, loss_type='l1'):
         super().__init__()
+        self.args = args
         self.denoise_fn = denoise_fn
         # condition net
         self.rrdb = rrdb_net
         self.ssim_loss = SSIM(window_size=11)
-        if hparams['aux_percep_loss']:
+        if self.args.aux_percep_loss:
             self.percep_loss_fn = [PerceptualLoss()]
 
-        if hparams['beta_schedule'] == 'cosine':
-            betas = cosine_beta_schedule(timesteps, s=hparams['beta_s'])
-        if hparams['beta_schedule'] == 'linear':
-            betas = get_beta_schedule(timesteps, beta_end=hparams['beta_end'])
-            if hparams['res']:
+        if self.args.beta_schedule == 'cosine':
+            betas = cosine_beta_schedule(timesteps, s=args.beta_s)
+        if self.args.beta_schedule == 'linear':
+            betas = get_beta_schedule(timesteps, beta_end=args.beta_end)
+            if self.args.res:
                 betas[-1] = 0.999
 
         alphas = 1. - betas
@@ -147,8 +147,8 @@ class GaussianDiffusion(nn.Module):
         b, *_, device = *x.shape, x.device
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long() \
             if t is None else torch.LongTensor([t]).repeat(b).to(device)
-        if hparams['use_rrdb']:
-            if hparams['fix_rrdb']:
+        if self.args.use_rrdb:
+            if self.args.fix_rrdb:
                 self.rrdb.eval()
                 with torch.no_grad():
                     rrdb_out, cond = self.rrdb(img_lr, True)
@@ -160,12 +160,12 @@ class GaussianDiffusion(nn.Module):
         x = self.img2res(x, img_lr_up)
         p_losses, x_tp1, noise_pred, x_t, x_t_gt, x_0 = self.p_losses(x, t, cond, img_lr_up, *args, **kwargs)
         ret = {'q': p_losses}
-        if not hparams['fix_rrdb']:
-            if hparams['aux_l1_loss']:
+        if not self.args.fix_rrdb:
+            if self.args.aux_l1_loss:
                 ret['aux_l1'] = F.l1_loss(rrdb_out, img_hr)
-            if hparams['aux_ssim_loss']:
+            if self.args.aux_ssim_loss:
                 ret['aux_ssim'] = 1 - self.ssim_loss(rrdb_out, img_hr)
-            if hparams['aux_percep_loss']:
+            if self.args.aux_percep_loss:
                 ret['aux_percep'] = self.percep_loss_fn[0](img_hr, rrdb_out)
         # x_recon = self.res2img(x_recon, img_lr_up)
         x_tp1 = self.res2img(x_tp1, img_lr_up)
@@ -193,12 +193,20 @@ class GaussianDiffusion(nn.Module):
 
     def q_sample(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
-        t_cond = (t[:, None, None, None] >= 0).float()
+        t_cond = (t[:, None, None, None, None] >= 0).float()
         t = t.clamp_min(0)
-        return (
-                       extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
-                       extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
-               ) * t_cond + x_start * (1 - t_cond)
+
+        ext1 = extract(self.sqrt_alphas_cumprod, t, x_start.shape)
+        ext2 = extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
+
+        ext1 = ext1 * x_start
+        ext2 = ext2 * noise
+
+        #print("ext1 shape", ext1.shape, "ext2 shape", ext2.shape)
+        #print("xstart.shape", x_start.shape)
+        #print("tcon shape", t_cond.shape)
+
+        return (ext1 + ext2) * t_cond + x_start * (1 - t_cond)
 
     @torch.no_grad()
     def p_sample(self, x, t, cond, img_lr_up, noise_pred=None, clip_denoised=True, repeat_noise=False):
@@ -216,18 +224,18 @@ class GaussianDiffusion(nn.Module):
     def sample(self, img_lr, img_lr_up, shape, save_intermediate=False):
         device = self.betas.device
         b = shape[0]
-        if not hparams['res']:
+        if not self.args.res:
             t = torch.full((b,), self.num_timesteps - 1, device=device, dtype=torch.long)
             img = self.q_sample(img_lr_up, t)
         else:
             img = torch.randn(shape, device=device)
-        if hparams['use_rrdb']:
+        if self.args.use_rrdb:
             rrdb_out, cond = self.rrdb(img_lr, True)
         else:
             rrdb_out = img_lr_up
             cond = img_lr
         it = reversed(range(0, self.num_timesteps))
-        if self.sample_tqdm:
+        if self.sample_tqdm and False: #disabled
             it = tqdm(it, desc='sampling loop time step', total=self.num_timesteps)
         images = []
         for i in it:
@@ -247,7 +255,7 @@ class GaussianDiffusion(nn.Module):
     def interpolate(self, x1, x2, img_lr, img_lr_up, t=None, lam=0.5):
         b, *_, device = *x1.shape, x1.device
         t = default(t, self.num_timesteps - 1)
-        if hparams['use_rrdb']:
+        if self.args.use_rrdb:
             rrdb_out, cond = self.rrdb(img_lr, True)
         else:
             cond = img_lr
@@ -270,18 +278,18 @@ class GaussianDiffusion(nn.Module):
 
     def res2img(self, img_, img_lr_up, clip_input=None):
         if clip_input is None:
-            clip_input = hparams['clip_input']
-        if hparams['res']:
+            clip_input = self.args.clip_input
+        if self.args.res:
             if clip_input:
                 img_ = img_.clamp(-1, 1)
-            img_ = img_ / hparams['res_rescale'] + img_lr_up
+            img_ = img_ / self.args.res_rescale + img_lr_up
         return img_
 
     def img2res(self, x, img_lr_up, clip_input=None):
         if clip_input is None:
-            clip_input = hparams['clip_input']
-        if hparams['res']:
-            x = (x - img_lr_up) * hparams['res_rescale']
+            clip_input = self.args.clip_input
+        if self.args.res:
+            x = (x - img_lr_up) * self.args.res_rescale
             if clip_input:
                 x = x.clamp(-1, 1)
         return x

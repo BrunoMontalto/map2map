@@ -70,7 +70,7 @@ def add_common_args(parser):
             help='upsampling factor for super-resolution, in which case '
             'crop and pad are sizes of the input resolution')
 
-    parser.add_argument('--model', type=str, required=True,
+    parser.add_argument('--model', type=str, default=None,
             help='(generator) model')
     parser.add_argument('--criterion', default='MSELoss', type=str,
             help='loss function')
@@ -231,6 +231,8 @@ def add_train_args(parser):
                         help='box size in Mpc/h for lag2eul')
 
     parser.add_argument('--always-condition-on-hr-l2e', action='store_true', help ='flag to always condition the discriminator on the high resolution (target) density field')
+
+    parser.add_argument('--also-condition-on-lr-l2e', action='store_true', help ='flag to also condition the discriminator on the low resolution (input) density field')
     
     #add argument to reduce dataset size (factor)
     parser.add_argument('--dataset-reduce-fac', type=int, default=1,
@@ -255,6 +257,38 @@ def add_train_args(parser):
     #add argument for criterion loss after adv starts
     parser.add_argument('--criterion-adv-weight', default=0, type=float,
             help='weight for criterion loss after adversarial training starts')
+
+    #srdiff
+    parser.add_argument('--srdiff', action='store_true')
+    parser.add_argument('--hidden-size', type=int, default=64)
+    parser.add_argument('--dim-mults', type=str, help='"|" separated integer list', default='1|2|2|4')
+    parser.add_argument('--timesteps', type=int, default=100)
+    parser.add_argument('--loss-type', type=str, default='l2')
+    parser.add_argument('--use-rrdb', action='store_true')
+    parser.add_argument('--fix-rrdb', action='store_true')
+    parser.add_argument('--rrdb-num-feat', type=int, default=32)
+    parser.add_argument('--rrdb-num-block', type=int, default=8)
+    parser.add_argument('--rrdb-ckpt', type=str, default=None)
+
+    parser.add_argument('--aux-percep-loss', action='store_true')
+    parser.add_argument('--aux-l1-loss', action='store_true')
+    parser.add_argument('--aux-ssim-loss', action='store_true')
+
+    parser.add_argument('--res', action='store_true')
+    parser.add_argument('--res-rescale', type=float, default=2.0)
+
+    parser.add_argument('--beta-s', type=float, default=0.0001)
+    parser.add_argument('--beta-end', type=float, default=0.02)
+
+    parser.add_argument('--beta-schedule', type=str, default='cosine',help='cosine or linear')
+    parser.add_argument('--clip-input', action='store_true') #TODO:not sure if this is bool
+
+    #   for unet
+    parser.add_argument('--sr-scale', type=int, default = 2) #same as scale factor?
+    parser.add_argument('--use-attn', action='store_true')
+    parser.add_argument('--up-input', action='store_true')
+    parser.add_argument('--use-wn', action='store_true')
+    
 
 
 

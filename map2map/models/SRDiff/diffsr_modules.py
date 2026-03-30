@@ -2,27 +2,30 @@ import functools
 import torch
 from torch import nn
 import torch.nn.functional as F
-from utils.hparams import hparams
+
 from .module_util import make_layer, initialize_weights
 from .commons import Mish, SinusoidalPosEmb, RRDB, Residual, Rezero, LinearAttention
 from .commons import ResnetBlock, Upsample, Block, Downsample
 
 
 class RRDBNet(nn.Module):
-    def __init__(self, in_nc, out_nc, nf, nb, gc=32):
+    def __init__(self, in_nc, out_nc, nf, nb, gc=32, sr_scale=4):
         super(RRDBNet, self).__init__()
         RRDB_block_f = functools.partial(RRDB, nf=nf, gc=gc)
 
-        self.conv_first = nn.Conv2d(in_nc, nf, 3, 1, 1, bias=True)
+        self.sr_scale = sr_scale
+
+        self.conv_first = nn.Conv3d(in_nc, nf, 3, 1, 1, bias=True)
         self.RRDB_trunk = make_layer(RRDB_block_f, nb)
-        self.trunk_conv = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        self.trunk_conv = nn.Conv3d(nf, nf, 3, 1, 1, bias=True)
         #### upsampling
-        self.upconv1 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
-        self.upconv2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
-        if hparams['sr_scale'] == 8:
-            self.upconv3 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
-        self.HRconv = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
-        self.conv_last = nn.Conv2d(nf, out_nc, 3, 1, 1, bias=True)
+        #TODO: this is always x4 unless sr_scale=8. Hardcoding x2
+        self.upconv1 = nn.Conv3d(nf, nf, 3, 1, 1, bias=True)
+        #self.upconv2 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        #if self.sr_scale == 8:
+        #    self.upconv3 = nn.Conv2d(nf, nf, 3, 1, 1, bias=True)
+        self.HRconv = nn.Conv3d(nf, nf, 3, 1, 1, bias=True)
+        self.conv_last = nn.Conv3d(nf, out_nc, 3, 1, 1, bias=True)
 
         self.lrelu = nn.LeakyReLU(negative_slope=0.2)
 
@@ -36,11 +39,12 @@ class RRDBNet(nn.Module):
         trunk = self.trunk_conv(fea)
         fea = fea_first + trunk
         feas.append(fea)
-
+        
+        #TODO: this is always x4 unless sr_scale=8. Hardcoding x2
         fea = self.lrelu(self.upconv1(F.interpolate(fea, scale_factor=2, mode='nearest')))
-        fea = self.lrelu(self.upconv2(F.interpolate(fea, scale_factor=2, mode='nearest')))
-        if hparams['sr_scale'] == 8:
-            fea = self.lrelu(self.upconv3(F.interpolate(fea, scale_factor=2, mode='nearest')))
+        #fea = self.lrelu(self.upconv2(F.interpolate(fea, scale_factor=2, mode='nearest')))
+        #if self.sr_scale == 8:
+        #    fea = self.lrelu(self.upconv3(F.interpolate(fea, scale_factor=2, mode='nearest')))
         fea_hr = self.HRconv(fea)
         out = self.conv_last(self.lrelu(fea_hr))
         out = out.clamp(0, 1)
@@ -52,15 +56,16 @@ class RRDBNet(nn.Module):
 
 
 class Unet(nn.Module):
-    def __init__(self, dim, out_dim=None, dim_mults=(1, 2, 4, 8), cond_dim=32):
+    def __init__(self, args, dim, out_dim=None, dim_mults=(1, 2, 4, 8), cond_dim=32):
         super().__init__()
+        self.args = args
         dims = [3, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
         groups = 0
 
-        self.cond_proj = nn.ConvTranspose2d(cond_dim * ((hparams['rrdb_num_block'] + 1) // 3),
-                                            dim, hparams['sr_scale'] * 2, hparams['sr_scale'],
-                                            hparams['sr_scale'] // 2)
+        self.cond_proj = nn.ConvTranspose3d(cond_dim * ((self.args.rrdb_num_block + 1) // 3),
+                                            dim, self.args.sr_scale * 2, self.args.sr_scale,
+                                            self.args.sr_scale // 2)
 
         self.time_pos_emb = SinusoidalPosEmb(dim)
         self.mlp = nn.Sequential(
@@ -84,7 +89,7 @@ class Unet(nn.Module):
 
         mid_dim = dims[-1]
         self.mid_block1 = ResnetBlock(mid_dim, mid_dim, time_emb_dim=dim, groups=groups)
-        if hparams['use_attn']:
+        if self.args.use_attn:
             self.mid_attn = Residual(Rezero(LinearAttention(mid_dim)))
         self.mid_block2 = ResnetBlock(mid_dim, mid_dim, time_emb_dim=dim, groups=groups)
 
@@ -99,21 +104,21 @@ class Unet(nn.Module):
 
         self.final_conv = nn.Sequential(
             Block(dim, dim, groups=groups),
-            nn.Conv2d(dim, out_dim, 1)
+            nn.Conv3d(dim, out_dim, 1)
         )
 
-        if hparams['res'] and hparams['up_input']:
+        if self.args.res and self.args.up_input:
             self.up_proj = nn.Sequential(
-                nn.ReflectionPad2d(1), nn.Conv2d(3, dim, 3),
+                nn.ReflectionPad3d(1), nn.Conv3d(3, dim, 3),
             )
-        if hparams['use_wn']:
+        if self.args.use_wn:
             self.apply_weight_norm()
-        if hparams['weight_init']:
-            self.apply(initialize_weights)
+        #if hparams['weight_init']: #TODO
+        #    self.apply(initialize_weights)
 
     def apply_weight_norm(self):
         def _apply_weight_norm(m):
-            if isinstance(m, torch.nn.Conv1d) or isinstance(m, torch.nn.Conv2d):
+            if isinstance(m, torch.nn.Conv1d) or isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Conv3d):
                 torch.nn.utils.weight_norm(m)
                 # print(f"| Weight norm is applied to {m}.")
 
@@ -124,19 +129,20 @@ class Unet(nn.Module):
         t = self.mlp(t)
 
         h = []
+        #print("cond shape", cond.shape, "cond[2::3] shape", cond[2::3].shape)
         cond = self.cond_proj(torch.cat(cond[2::3], 1))
         for i, (resnet, resnet2, downsample) in enumerate(self.downs):
             x = resnet(x, t)
             x = resnet2(x, t)
             if i == 0:
                 x = x + cond
-                if hparams['res'] and hparams['up_input']:
+                if self.args.res and self.args.up_input:
                     x = x + self.up_proj(img_lr_up)
             h.append(x)
             x = downsample(x)
 
         x = self.mid_block1(x, t)
-        if hparams['use_attn']:
+        if self.args.use_attn:
             x = self.mid_attn(x)
         x = self.mid_block2(x, t)
 

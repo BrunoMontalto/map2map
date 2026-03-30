@@ -1,7 +1,7 @@
 import math
 import torch
 import torch.nn.functional as F
-from einops import rearrange
+#from einops import rearrange #TODO: install
 from torch import nn
 from torch.nn import Parameter
 
@@ -52,14 +52,14 @@ class Block(nn.Module):
         super().__init__()
         if groups == 0:
             self.block = nn.Sequential(
-                nn.ReflectionPad2d(1),
-                nn.Conv2d(dim, dim_out, 3),
+                nn.ReflectionPad3d(1),
+                nn.Conv3d(dim, dim_out, 3),
                 Mish()
             )
         else:
             self.block = nn.Sequential(
-                nn.ReflectionPad2d(1),
-                nn.Conv2d(dim, dim_out, 3),
+                nn.ReflectionPad3d(1),
+                nn.Conv3d(dim, dim_out, 3),
                 nn.GroupNorm(groups, dim_out),
                 Mish()
             )
@@ -79,12 +79,13 @@ class ResnetBlock(nn.Module):
 
         self.block1 = Block(dim, dim_out, groups=groups)
         self.block2 = Block(dim_out, dim_out, groups=groups)
-        self.res_conv = nn.Conv2d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
+        self.res_conv = nn.Conv3d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
     def forward(self, x, time_emb=None, cond=None):
         h = self.block1(x)
         if time_emb is not None:
-            h += self.mlp(time_emb)[:, :, None, None]
+            #print("h shape", h.shape, "self.mlp(time_emb)[:, :, None, None] shape:", self.mlp(time_emb)[:, :, None, None].shape )
+            h += self.mlp(time_emb)[:, :, None, None, None]
         if cond is not None:
             h += cond
         h = self.block2(h)
@@ -95,7 +96,7 @@ class Upsample(nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.ConvTranspose2d(dim, dim, 4, 2, 1),
+            nn.ConvTranspose3d(dim, dim, 4, 2, 1),
         )
 
     def forward(self, x):
@@ -106,8 +107,8 @@ class Downsample(nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.conv = nn.Sequential(
-            nn.ReflectionPad2d(1),
-            nn.Conv2d(dim, dim, 3, 2),
+            nn.ReflectionPad3d(1),
+            nn.Conv3d(dim, dim, 3, 2),
         )
 
     def forward(self, x):
@@ -119,8 +120,8 @@ class LinearAttention(nn.Module):
         super().__init__()
         self.heads = heads
         hidden_dim = dim_head * heads
-        self.to_qkv = nn.Conv2d(dim, hidden_dim * 3, 1, bias=False)
-        self.to_out = nn.Conv2d(hidden_dim, dim, 1)
+        self.to_qkv = nn.Conv3d(dim, hidden_dim * 3, 1, bias=False)
+        self.to_out = nn.Conv3d(hidden_dim, dim, 1)
 
     def forward(self, x):
         b, c, h, w = x.shape
@@ -282,11 +283,11 @@ class ResidualDenseBlock_5C(nn.Module):
     def __init__(self, nf=64, gc=32, bias=True):
         super(ResidualDenseBlock_5C, self).__init__()
         # gc: growth channel, i.e. intermediate channels
-        self.conv1 = nn.Conv2d(nf, gc, 3, 1, 1, bias=bias)
-        self.conv2 = nn.Conv2d(nf + gc, gc, 3, 1, 1, bias=bias)
-        self.conv3 = nn.Conv2d(nf + 2 * gc, gc, 3, 1, 1, bias=bias)
-        self.conv4 = nn.Conv2d(nf + 3 * gc, gc, 3, 1, 1, bias=bias)
-        self.conv5 = nn.Conv2d(nf + 4 * gc, nf, 3, 1, 1, bias=bias)
+        self.conv1 = nn.Conv3d(nf, gc, 3, 1, 1, bias=bias)
+        self.conv2 = nn.Conv3d(nf + gc, gc, 3, 1, 1, bias=bias)
+        self.conv3 = nn.Conv3d(nf + 2 * gc, gc, 3, 1, 1, bias=bias)
+        self.conv4 = nn.Conv3d(nf + 3 * gc, gc, 3, 1, 1, bias=bias)
+        self.conv5 = nn.Conv3d(nf + 4 * gc, nf, 3, 1, 1, bias=bias)
         self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
 
         # initialization

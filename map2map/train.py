@@ -29,6 +29,9 @@ from .models.lag2eul import lag2eul, inverse_pixel_shuffle_3d
 from .models.power_loss import PowerLoss
 from .data.norms import cosmology
 
+from .models.SRDiff.diffsr_modules import Unet, RRDBNet
+from .models.SRDiff.diffusion import GaussianDiffusion
+from.models.SRDiff.module_util import initialize_weights
 """
 import numpy as np
 
@@ -196,14 +199,37 @@ def gpu_worker(local_rank, node, args):
             pin_memory=True,
         )
 
-    args.in_chan, args.out_chan = train_dataset.in_chan, train_dataset.tgt_chan
+    args.in_chan, args.out_chan = train_dataset.in_chan, train_dataset.tgt_chan #NOTE: these are arrays of 1 elem
 
     if rank == 0:
         print("train dataset size: {}".format(len(train_loader.dataset)))
 
-    model = import_attr(args.model, models, callback_at=args.callback_at)
-    model = model(sum(args.in_chan), sum(args.out_chan),
-                  scale_factor=args.scale_factor, **args.misc_kwargs)
+    if not args.srdiff:
+        model = import_attr(args.model, models, callback_at=args.callback_at)
+        model = model(sum(args.in_chan), sum(args.out_chan),
+                    scale_factor=args.scale_factor, **args.misc_kwargs)
+    else:
+
+        #TODO: create scheduler for srdiff
+        args.sr_scale = args.scale_factor
+        args.dim_mults = [int(x) for x in args.dim_mults.split('|')]
+
+        denoise_fn = Unet(
+            args, args.hidden_size, out_dim=args.out_chan[0], cond_dim=args.rrdb_num_feat, dim_mults=args.dim_mults) #TODO: not fancy
+        if args.use_rrdb:
+            rrdb = RRDBNet(3, 3, args.rrdb_num_feat, args.rrdb_num_block,
+                           args.rrdb_num_feat // 2, sr_scale = args.sr_scale)
+            #if args.rrdb_ckpt != '' and os.path.exists(args.rrdb_ckpt):
+            #    load_ckpt(rrdb, args.rrdb_ckpt)
+        else:
+            rrdb = None
+        model = GaussianDiffusion(
+            args = args,
+            denoise_fn=denoise_fn,
+            rrdb_net=rrdb,
+            timesteps=args.timesteps,
+            loss_type=args.loss_type
+        )
 
     
     if rank == 0:
@@ -216,7 +242,7 @@ def gpu_worker(local_rank, node, args):
     model.to(device)
     #model = torch.compile(model)
     model = DistributedDataParallel(model, device_ids=[device],
-                                    process_group=dist.new_group())
+                                    process_group=dist.new_group(), find_unused_parameters=True)
 
     #model = DistributedDataParallel(model, device_ids=[device]) # replace 1
 
@@ -241,7 +267,7 @@ def gpu_worker(local_rank, node, args):
     if args.adv:
         in_chans = None
         if args.cgan:
-            in_chans = sum(args.in_chan) + sum(args.out_chan) + ( ( (1 + 7*(args.mesh_up_fac-1)) * (2 if args.always_condition_on_hr_l2e else 1))  if args.lag2eul else 0 ) #NOTE: *(2 if args.always_condition_on_hr_l2e else 1) added after states_lag2eul_15
+            in_chans = sum(args.in_chan) + sum(args.out_chan) + ( ( (1 + 7*(args.mesh_up_fac-1)) * (1 + (1 if args.always_condition_on_hr_l2e else 0) + (1 if args.also_condition_on_lr_l2e else 0)))   if args.lag2eul else 0 ) #NOTE: *(2 if args.always_condition_on_hr_l2e else 1) added after states_lag2eul_15
         else:
             in_chans = sum(args.out_chan)
 
@@ -292,11 +318,15 @@ def gpu_worker(local_rank, node, args):
                 print('no state to load, initializing model weights', flush=True)
 
         if args.init_weight_std is not None:
-                
-            model.apply(init_weights)
-
+            
+            if not args.srdiff:
+                model.apply(init_weights)
+            else:
+                model.denoise_fn.apply(initialize_weights) #TODO srdiff initialize_weights requires a different function
             if args.adv:
                 adv_model.apply(init_weights)
+
+                
 
         start_epoch = 0
 
@@ -370,7 +400,7 @@ def gpu_worker(local_rank, node, args):
         args.instance_noise = InstanceNoise(args.instance_noise,
                                             args.instance_noise_batches)
 
-    
+    #TODO: add if
     power_loss = PowerLoss()
     
     
@@ -489,21 +519,31 @@ def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
         input = input.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
-        output = model(input)
-        if i <= 5 and rank == 0:
-            print('##### batch :', batch)
-            print('input shape :', input.shape, 'min/max :', input.min().item(), input.max().item())
-            print('output shape :', output.shape, 'min/max :', output.min().item(), output.max().item())
-            print('target shape :', target.shape, 'min/max :', target.min().item(), target.max().item())
+        if not args.srdiff:
+            output = model(input)
+            if i <= 5 and rank == 0:
+                print('##### batch :', batch)
+                print('input shape :', input.shape, 'min/max :', input.min().item(), input.max().item())
+                print('output shape :', output.shape, 'min/max :', output.min().item(), output.max().item())
+                print('target shape :', target.shape, 'min/max :', target.min().item(), target.max().item())
 
-        if (hasattr(model.module, 'scale_factor')
-                and model.module.scale_factor != 1):
-            input = resample(input, model.module.scale_factor, narrow=False)
-        input, output, target = narrow_cast(input, output, target)
-        if batch <= 5 and rank == 0:
-            print('narrowed shape :', output.shape, flush=True)
+            if (hasattr(model.module, 'scale_factor')
+                    and model.module.scale_factor != 1):
+                input = resample(input, model.module.scale_factor, narrow=False)
+            input, output, target = narrow_cast(input, output, target)
+            if batch <= 5 and rank == 0:
+                print('narrowed shape :', output.shape, flush=True)
 
-        loss = criterion(output, target)
+            loss = criterion(output, target)
+        else:
+            input_up = resample(input, args.scale_factor, narrow=False)
+            if i <= 5 and rank == 0:
+                print('##### batch :', batch)
+                print('input shape :', input.shape, 'min/max :', input.min().item(), input.max().item())
+                print('input_up shape :', input_up.shape)
+                print('target shape :', target.shape, 'min/max :', target.min().item(), target.max().item())
+            losses, _, _ = model(target, input, input_up)
+            loss = sum(losses.values()) #NOTE: using the same variable used for criterion loss for logging reasons
 
         epoch_loss[0] += loss.detach()
 
@@ -527,17 +567,31 @@ def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
                     out_eul = lag2eul(output[:, :3], eul_scale_factor=args.mesh_up_fac, boxsize = args.boxsize, meshsize = args.meshsize)[0] #NOTE: hardcoded HR Ng (1024)
                     tgt_eul = lag2eul(target[:, :3], eul_scale_factor=args.mesh_up_fac, boxsize = args.boxsize, meshsize = args.meshsize)[0] #NOTE: hardcoded HR Ng (1024)
 
+                    if args.also_condition_on_lr_l2e:
+                        in_eul = lag2eul(input[:, :3], eul_scale_factor=args.mesh_up_fac, boxsize = args.boxsize, meshsize = args.meshsize)[0]
+
                     if args.mesh_up_fac > 1:
                         #use inverse pixel shuffle to allow concatenation along channel dimension
                         out_eul = inverse_pixel_shuffle_3d(out_eul, scale=args.mesh_up_fac)
                         tgt_eul = inverse_pixel_shuffle_3d(tgt_eul, scale=args.mesh_up_fac)
 
-                    if args.always_condition_on_hr_l2e:
-                        output = torch.cat([input, output, out_eul, tgt_eul], dim=1)
-                        target = torch.cat([input, target, tgt_eul, tgt_eul], dim=1)
+                        if args.also_condition_on_lr_l2e:
+                            in_eul = inverse_pixel_shuffle_3d(in_eul, scale=args.mesh_up_fac)
+
+                    if args.also_condition_on_lr_l2e:
+                        if args.always_condition_on_hr_l2e:
+                            output = torch.cat([input, output, in_eul, out_eul, tgt_eul], dim=1)
+                            target = torch.cat([input, target, in_eul, tgt_eul, tgt_eul], dim=1)
+                        else:
+                            output = torch.cat([input, output, in_eul, out_eul], dim=1)
+                            target = torch.cat([input, target, in_eul, tgt_eul], dim=1)
                     else:
-                        output = torch.cat([input, output, out_eul], dim=1)
-                        target = torch.cat([input, target, tgt_eul], dim=1)
+                        if args.always_condition_on_hr_l2e:
+                            output = torch.cat([input, output, out_eul, tgt_eul], dim=1)
+                            target = torch.cat([input, target, tgt_eul, tgt_eul], dim=1)
+                        else:
+                            output = torch.cat([input, output, out_eul], dim=1)
+                            target = torch.cat([input, target, tgt_eul], dim=1)
                     
                         
 
@@ -615,10 +669,25 @@ def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
                 optimizer.step()
                 grads = get_grads(model)
         else:
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            grads = get_grads(model)
+
+            if args.srdiff:
+                #TODO: just patched from trainer.py, needs rewrite
+                #model.train() #TODO: maybe this is redundant
+                
+                #losses, _, _ = model(output, input, target)
+                #loss = sum(losses.values()) #NOTE: using the same variable used for criterion loss for logging reasons
+
+                optimizer.zero_grad()
+
+                loss.backward()
+                optimizer.step()
+                #diff_scheduler.step(batch) #TODO: no scheduler for now
+                grads = None #TODO: get_grads is not suited for the srdiff model
+            else:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                grads = get_grads(model)
 
         if batch % args.log_interval == 0:
             dist.all_reduce(loss)
@@ -651,17 +720,18 @@ def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
                         global_step=batch,
                     )
 
-                logger.add_scalar('grad/first', grads[0], global_step=batch)
-                logger.add_scalar('grad/last', grads[-1], global_step=batch)
-                if args.adv and epoch >= args.adv_start:
-                    logger.add_scalar('grad/adv/first', adv_grads[0],
-                                      global_step=batch)
-                    logger.add_scalar('grad/adv/last', adv_grads[-1],
-                                      global_step=batch)
+                if grads is not None:
+                    logger.add_scalar('grad/first', grads[0], global_step=batch)
+                    logger.add_scalar('grad/last', grads[-1], global_step=batch)
+                    if args.adv and epoch >= args.adv_start:
+                        logger.add_scalar('grad/adv/first', adv_grads[0],
+                                        global_step=batch)
+                        logger.add_scalar('grad/adv/last', adv_grads[-1],
+                                        global_step=batch)
 
-                    if noise_std > 0:
-                        logger.add_scalar('instance_noise', noise_std,
-                                          global_step=batch)
+                        if noise_std > 0:
+                            logger.add_scalar('instance_noise', noise_std,
+                                            global_step=batch)
 
     dist.all_reduce(epoch_loss)
     epoch_loss /= len(loader) * world_size
@@ -716,6 +786,11 @@ def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
             #    print('downsampled output shape :', output.shape, flush=True)
             #    print('downsampled target shape :', target.shape, flush=True)
 
+            if args.srdiff: #remember the output is never defined above if args.srdiff is True
+                output, _ = model.module.sample(input, input_up, input_up.shape, False) #TODO: use only one batch!
+                print("srdiff sample output shape:", output.shape)
+                input = input_up #since in the srdiff training input contains the original not resampled version, replace it now for plotting
+
             skip_chan = 0
             if args.adv and epoch >= args.adv_start and args.cgan:
                 skip_chan = sum(args.in_chan)
@@ -742,7 +817,8 @@ def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
             )
             logger.add_figure('fig/train/power/lag', fig, global_step=epoch+1)
             fig.clf()
-
+            
+            #if epoch%10==0: #NOTE: this was added starting from lag2eul25 to save memory. actually i am removing it (starting from srdiff runs) since there is already the tb_plot_interval arg
             crop_boxsize = cosmology.dis_not_in_place(args.boxsize * (args.crop*args.scale_factor / 1024)) #NOTE: hardcoded 1024
 
             fig = plt_pos_projections(
@@ -869,8 +945,8 @@ def validate(epoch, loader, model, criterion, adv_model, adv_criterion,
 
 
 def dist_init(rank, args):
-    dist_file = 'dist_addr'
-
+    dist_file = 'dist_addr_' + os.environ.get("SLURM_JOB_ID")
+    print("dist_file:", dist_file)
     if rank == 0:
         addr = socket.gethostname()
 
@@ -886,8 +962,13 @@ def dist_init(rank, args):
             #throw error
             raise FileExistsError('dist_file already exists')
 
-        with open(dist_file, mode='w') as f:
+        #with open(dist_file, mode='w') as f:
+        #    f.write(args.dist_addr)
+
+        with open(dist_file, 'w') as f:
             f.write(args.dist_addr)
+            f.flush()
+            os.fsync(f.fileno())
 
         print('dist init (rank {}) at {}, write done'.format(rank, args.dist_addr), flush=True)
     else:

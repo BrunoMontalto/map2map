@@ -170,3 +170,6 @@ map2map/models/AE.py
 *.png
 *backup*
 *npz
+
+map2map/models/SRDiff copy
+dist_addr_*
