@@ -133,6 +133,19 @@ class PowerLossL2E(nn.Module):
         x = lag2eul(x,  boxsize=self.boxsize, eul_scale_factor=self.mesh_up_fac, meshsize=self.meshsize)[0]
         y = lag2eul(y,  boxsize=self.boxsize, eul_scale_factor=self.mesh_up_fac, meshsize=self.meshsize)[0]
         return power_loss(x, y)
+    
+class LossL2E(nn.Module):
+    def __init__(self, boxsize=1000.0, meshsize = 1024, mesh_up_fac=2):
+        super().__init__()
+        self.mesh_up_fac = mesh_up_fac
+        self.boxsize = boxsize
+        self.meshsize = meshsize
+
+    def forward(self, x, y):
+        # Convert from lagrangian to eulerian space
+        x = lag2eul(x,  boxsize=self.boxsize, eul_scale_factor=self.mesh_up_fac, meshsize=self.meshsize)[0]
+        y = lag2eul(y,  boxsize=self.boxsize, eul_scale_factor=self.mesh_up_fac, meshsize=self.meshsize)[0]
+        return F.mse_loss(x, y)
 
 
 
