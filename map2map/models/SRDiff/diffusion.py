@@ -142,7 +142,7 @@ class GaussianDiffusion(nn.Module):
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
         return model_mean, posterior_variance, posterior_log_variance, x_recon
 
-    def forward(self, img_hr, img_lr, img_lr_up, t=None, *args, **kwargs):
+    def forward(self, img_hr, img_lr, img_lr_up, t=None, power_loss=None, l2e_loss=None, *args, **kwargs):
         x = img_hr
         b, *_, device = *x.shape, x.device
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long() \
@@ -167,6 +167,14 @@ class GaussianDiffusion(nn.Module):
                 ret['aux_ssim'] = 1 - self.ssim_loss(rrdb_out, img_hr)
             if self.args.aux_percep_loss:
                 ret['aux_percep'] = self.percep_loss_fn[0](img_hr, rrdb_out)
+
+        if power_loss is not None or l2e_loss is not None:
+            x0_img = self.res2img(x_0, img_lr_up) #NOTE: this should give the sr
+        if power_loss is not None:
+            ret['aux_power'] = power_loss(x0_img, img_hr)
+        if l2e_loss is not None:
+            ret['aux_l2e'] = l2e_loss(x0_img, img_hr)
+
         # x_recon = self.res2img(x_recon, img_lr_up)
         x_tp1 = self.res2img(x_tp1, img_lr_up)
         x_t = self.res2img(x_t, img_lr_up)

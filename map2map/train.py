@@ -26,7 +26,7 @@ from .utils import import_attr, load_model_state_dict, plt_slices, plt_power
 from .utils.figures import plt_pos_projections
 
 from .models.lag2eul import lag2eul, inverse_pixel_shuffle_3d
-from .models.power_loss import PowerLoss
+from .models.power_loss import PowerLoss, PowerLossL2E, LossL2E
 from .data.norms import cosmology
 
 from .models.SRDiff.diffsr_modules import Unet, RRDBNet
@@ -260,8 +260,8 @@ def gpu_worker(local_rank, node, args):
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, **args.scheduler_args)
 
-    if args.mesh_up_fac > 2 and args.lag2eul:
-        raise NotImplementedError('mesh_up_fac > 2 with lag2eul not implemented yet')
+    if args.adv and args.mesh_up_fac > 2 and args.lag2eul:
+        raise NotImplementedError('mesh_up_fac > 2 with lag2eul not implemented yet for adversarial training')
 
     adv_model = adv_criterion = adv_optimizer = adv_scheduler = None
     if args.adv:
@@ -286,6 +286,7 @@ def gpu_worker(local_rank, node, args):
         if rank == 0:
             n_params = sum(p.numel() for p in adv_model.parameters())
             n_trainable_params = sum(p.numel() for p in adv_model.parameters() if p.requires_grad)
+            print('adv in_chans:', in_chans)
             print('adv model parameters: {}, trainable: {}'.format(n_params, n_trainable_params), flush=True)
         
         adv_model.to(device)
@@ -400,8 +401,21 @@ def gpu_worker(local_rank, node, args):
         args.instance_noise = InstanceNoise(args.instance_noise,
                                             args.instance_noise_batches)
 
-    #TODO: add if
-    power_loss = PowerLoss()
+    if args.power_loss_weight > 0:
+        if not args.srdiff:
+            power_loss = PowerLoss()
+        else:
+            if args.lag2eul: #NOTE: if args.srdiff is on, lag2eul is used to choose between PowerLoss and PowerLossL2E
+                power_loss = PowerLossL2E(boxsize=args.boxsize, meshsize=args.meshsize, mesh_up_fac=args.mesh_up_fac)
+            else:
+                power_loss = PowerLoss()
+    else: 
+        power_loss = None
+
+    if args.l2e_loss_weight > 0:
+        l2e_loss = LossL2E(boxsize=args.boxsize, meshsize=args.meshsize, mesh_up_fac=args.mesh_up_fac)
+    else:
+        l2e_loss = None
     
     
     if rank == 0:
@@ -415,7 +429,7 @@ def gpu_worker(local_rank, node, args):
 
 
         train_loss = train(epoch, train_loader,
-            model, criterion, power_loss, optimizer, scheduler,
+            model, criterion, power_loss, l2e_loss, optimizer, scheduler,
             adv_model, adv_criterion, adv_optimizer, adv_scheduler,
             logger, device, args)
         epoch_loss = train_loss
@@ -478,7 +492,7 @@ def gpu_worker(local_rank, node, args):
     dist.destroy_process_group()
 
 
-def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
+def train(epoch, loader, model, criterion, power_loss, l2e_loss, optimizer, scheduler,
         adv_model, adv_criterion, adv_optimizer, adv_scheduler,
         logger, device, args):
     model.train()
@@ -535,6 +549,8 @@ def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
                 print('narrowed shape :', output.shape, flush=True)
 
             loss = criterion(output, target)
+
+            epoch_loss[0] += loss.detach()
         else:
             input_up = resample(input, args.scale_factor, narrow=False)
             if i <= 5 and rank == 0:
@@ -542,10 +558,23 @@ def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
                 print('input shape :', input.shape, 'min/max :', input.min().item(), input.max().item())
                 print('input_up shape :', input_up.shape)
                 print('target shape :', target.shape, 'min/max :', target.min().item(), target.max().item())
-            losses, _, _ = model(target, input, input_up)
-            loss = sum(losses.values()) #NOTE: using the same variable used for criterion loss for logging reasons
+            losses, _, _ = model(target, input, input_up, power_loss=power_loss, l2e_loss=l2e_loss)
+            loss = losses['q']
+            epoch_loss[0] += loss.detach()
 
-        epoch_loss[0] += loss.detach()
+            if args.power_loss_weight > 0:
+                p_loss = args.power_loss_weight * losses['aux_power']
+                loss += p_loss
+
+                epoch_loss[1] += p_loss.detach()
+
+            if args.l2e_loss_weight > 0:
+                l_loss = args.l2e_loss_weight * losses['aux_l2e']
+                loss += l_loss
+
+                epoch_loss[2] += l_loss.detach()
+
+            
 
         if args.adv and epoch >= args.adv_start:
             if rank == 0 and epoch == args.adv_start and i == 0:
@@ -738,9 +767,29 @@ def train(epoch, loader, model, criterion, power_loss, optimizer, scheduler,
     if rank == 0:
         print('logging epoch {} losses'.format(epoch+1), flush=True)
 
-        logger.add_scalar('loss/epoch/train', epoch_loss[0],
+
+        if not args.srdiff:
+            logger.add_scalar('loss/epoch/train', epoch_loss[0],
                           global_step=epoch+1)
-        print('logged main loss', flush=True)
+            print('logged main loss', flush=True)
+        else:
+
+            losses_to_log = {
+                    args.loss_type: epoch_loss[0],
+                }
+            
+            if args.power_loss_weight > 0:
+                losses_to_log[("powerl2e" if args.lag2eul else "power")] = epoch_loss[1]
+            if args.l2e_loss_weight > 0:
+                losses_to_log["l2e"] = epoch_loss[2]
+            
+            logger.add_scalars(
+                'loss/epoch/train', 
+                losses_to_log,
+                global_step=epoch+1)
+                
+            
+            print('logged loss', flush=True)
 
         if args.adv and epoch >= args.adv_start:
             if not (args.power_loss_weight > 0 or args.criterion_adv_weight > 0):

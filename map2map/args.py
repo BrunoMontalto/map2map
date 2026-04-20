@@ -288,6 +288,10 @@ def add_train_args(parser):
     parser.add_argument('--use-attn', action='store_true')
     parser.add_argument('--up-input', action='store_true')
     parser.add_argument('--use-wn', action='store_true')
+
+
+    #l2e loss
+    parser.add_argument('--l2e-loss-weight', type=float, default=0.0)
     
 
 
