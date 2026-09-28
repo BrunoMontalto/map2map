@@ -233,12 +233,12 @@ def plt_pos_projections(*fields, boxsize, Ng, labels=None, **kwargs):
 
         """
         # XZ projection
-        axes[1, f].scatter(pos_field[0].flatten(), pos_field[2].flatten(), s=0.005, alpha=0.5)
+        axes[1, f].scatter(data[0].flatten(), data[2].flatten(), s=0.005, alpha=0.5)
         axes[1, f].set_title(f'norm XZ Projection {label if label else ""}')
         axes[1, f].set_aspect('equal')
 
         # YZ projection
-        axes[2, f].scatter(pos_field[1].flatten(), pos_field[2].flatten(), s=0.005, alpha=0.5)
+        axes[2, f].scatter(data[1].flatten(), data[2].flatten(), s=0.005, alpha=0.5)
         axes[2, f].set_title(f'norm YZ Projection {label if label else ""}')
         axes[2, f].set_aspect('equal')
         """

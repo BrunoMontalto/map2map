@@ -9,11 +9,15 @@ from torch.utils.data import DataLoader
 from .data.fields_test import FieldDataset
 from .data import norms
 from . import models
-from .models import narrow_cast
+from .models import narrow_cast, resample
 from .utils import import_attr, load_model_state_dict
 
 from glob import glob
 from .models.power_loss import LogSpectralDistance, PowerL2E_non_diff
+
+from .utils.figures import plt_pos_projections
+
+from .data.norms import cosmology
 
 
 def test(args):
@@ -117,7 +121,7 @@ def test(args):
     dis_array = np.empty((3, N, N, N), dtype=np.float32)
     if len(args.test_in_patterns) == 2:
         vel_array = np.empty((3, N, N, N), dtype=np.float32)
-
+    print("dis array allocated")
 
 
 
@@ -131,7 +135,7 @@ def test(args):
     )], axis=-1).reshape(-1, 3)
     ncrop = len(anchors)
 
-    
+    print("anchors created")
 
     with torch.no_grad():
         average_loss = 0
@@ -143,6 +147,7 @@ def test(args):
             input = input.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
 
+            print("generating output")
             output = model(input)
             if i < 5:
                 print('##### sample :', i)
@@ -150,11 +155,26 @@ def test(args):
                 print('output shape :', output.shape)
                 print('target shape :', target.shape)
 
-            output, target = narrow_cast(output, target) #NOTE: removed input from narrow_cast
+            if (hasattr(model, 'scale_factor')
+                    and model.scale_factor != 1):
+                input = resample(input, model.scale_factor, narrow=False)
+
+            input, output, target = narrow_cast(input, output, target) #NOTE: removed input from narrow_cast
             if i < 5:
                 print('narrowed shape :', output.shape, flush=True)
 
-            
+            if i == 0 and args.plot_projs:
+                crop_boxsize = cosmology.dis_not_in_place(args.boxsize * (args.crop*args.scale_factor / 1024)) #NOTE: hardcoded 1024
+
+                fig = plt_pos_projections(
+                    input[-1], output[-1], target[-1],
+                    boxsize=crop_boxsize,
+                    Ng=input.shape[2],
+                    labels=['in', 'out', 'tgt'],
+                    **args.misc_kwargs,
+                )
+                split = args.load_state.split('/')
+                fig.savefig(os.path.join(args.plot_path, os.environ.get('SLURM_JOB_ID') + '_' + split[1] + '_' + split[2].replace('.pt','.png')))
 
             #if args.in_norms is not None:
             #    start = 0
@@ -208,6 +228,7 @@ def test(args):
                 anchor = anchors[icrop]
 
                 anchor = data['anchor'][0].numpy()  # anchor of the crop in the original field
+                anchor -= crop_start #added in 09/07/2026 to allow different crop start.
 
                 #print(f'anchor: {anchor}, crop_start: {crop_start}, crop_stop: {crop_stop}')
 

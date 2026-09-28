@@ -113,16 +113,22 @@ plots_temp2/
 memory_check.py
 preprocess_mp.py
 to_gadget_file.py
+to_gadget*/
 
 DEMNUni*/
 _DEMNUni*/
+DEMNUNI*
 
-*states*/
+states/*
+!states/baseline.pt
+!states/pk_method.pt
+states_no_dist/
+states_srdiff/
 checkpoint.pt
 runs*/
 
 
-srs_env/
+srs_env*/
 
 #TODO: readd these 2 later
 commands/
@@ -138,6 +144,10 @@ create_validation.py
 find_lattice.py
 read_ic.py
 map2map/data/fields_optim.py
+map2map/models/srsgan2_printcopy.py
+map2map/data/norms/radio.py
+map2map/data/datasetv3_nocontext.py
+
 
 comparison_plots.py
 comparison_plots_zoom.py
@@ -157,6 +167,10 @@ nbodykit_plot_hmf_fix_attempt.py
 nbodykit_plot_hmf_fix_attempt2.py
 nbodykit_plot_hmf_OLD.py
 inference.py
+find_most_massive_halo.py
+nbodykit_pk_vs_implementation.py
+pk_vs_pkdiff.py
+preprocess_radio.py
 
 map2map/check_inference_speed.py
 map2map/train_no_dist.py

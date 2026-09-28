@@ -1,4 +1,4 @@
-import os
+import os, glob
 import socket
 import time
 import sys
@@ -111,14 +111,23 @@ def gpu_worker(local_rank, node, args):
             os.makedirs(args.states_folder)
             print(f"states folder '{args.states_folder}' created.")
         else:
+            files = glob.glob(args.states_folder + "/state_*.pt")
+            if not files:
+                last = None
+            else:
+                last = max(files, key=lambda x: int(os.path.basename(x).split("_")[1].split(".")[0]))
+            print(f"NOTE: states folder '{args.states_folder}' already exists."
+                    f"\t-last state: {last}")
             #log that the folder already exists and the states filenames it contains
-            print(f"NOTE: states folder '{args.states_folder}' already exists. "
-                    f"\t-contains files: {os.listdir(args.states_folder)}")
+            
+
+            if args.load_state != last:
+                print("WARNING! load state is {} but last state is {}".format(args.load_state, last))
             
         tb_log_folder = 'runs' if args.tb_log_folder is None else args.tb_log_folder
         if os.path.exists(tb_log_folder):
-            print(f"NOTE: tensorboard log folder '{tb_log_folder}' already exists. "
-                    f"\t-contains files: {os.listdir(tb_log_folder)}")
+            print(f"NOTE: tensorboard log folder '{tb_log_folder}' already exists."
+                    f"\t-contains: {os.listdir(tb_log_folder)}")
 
     #add barrier
     dist.barrier()
@@ -312,8 +321,7 @@ def gpu_worker(local_rank, node, args):
         adv_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             adv_optimizer, **args.scheduler_args)
 
-    if (args.load_state == ckpt_link and not os.path.isfile(ckpt_link)
-            or not args.load_state):
+    if (not args.load_state):
         
         if rank == 0:
                 print('no state to load, initializing model weights', flush=True)
@@ -334,7 +342,10 @@ def gpu_worker(local_rank, node, args):
         if rank == 0:
             min_loss = None
     else:
-        state = torch.load(args.load_state, map_location=device)
+        if args.load_state == "!last":
+            state = torch.load(args.last_state_path, map_location=device)
+        else:
+            state = torch.load(args.load_state, map_location=device)
 
         start_epoch = state['epoch']
 
@@ -403,12 +414,12 @@ def gpu_worker(local_rank, node, args):
 
     if args.power_loss_weight > 0:
         if not args.srdiff:
-            power_loss = PowerLoss()
+            power_loss = PowerLoss(dimensionless=args.dimensionless_pk, cut=args.cut_first_n_pk_values)
         else:
             if args.lag2eul: #NOTE: if args.srdiff is on, lag2eul is used to choose between PowerLoss and PowerLossL2E
                 power_loss = PowerLossL2E(boxsize=args.boxsize, meshsize=args.meshsize, mesh_up_fac=args.mesh_up_fac)
             else:
-                power_loss = PowerLoss()
+                power_loss = PowerLoss(dimensionless=args.dimensionless_pk, cut=args.cut_first_n_pk_values)
     else: 
         power_loss = None
 
@@ -523,7 +534,7 @@ def train(epoch, loader, model, criterion, power_loss, l2e_loss, optimizer, sche
             device=device)
 
     for i, data in enumerate(loader):
-        if rank == 0 and (i == 0 or (i + 1) % 8 == 0): #%8 for batchsize 4 and crop 32
+        if rank == 0 and (i == 0 or (i + 1) % 32 == 0): #%8 for batchsize 4 and crop 32
             print('epoch {}, batch {}/{}'.format(epoch+1, i+1, len(loader)), flush=True)
 
         batch = epoch * len(loader) + i + 1
@@ -856,29 +867,29 @@ def train(epoch, loader, model, criterion, power_loss, l2e_loss, optimizer, sche
             logger.add_figure('fig/train', fig, global_step=epoch+1)
             fig.clf()  
 
-            if rank == 0:
+            if not args.radio:
                 print('plt_power start', flush=True)
 
-            fig = plt_power(
-                input[:, :3], output[:, skip_chan:skip_chan+3], target[:, skip_chan:skip_chan+3], #NOTE: using displacements only
-                label=['in', 'out', 'tgt'],
-                **args.misc_kwargs,
-            )
-            logger.add_figure('fig/train/power/lag', fig, global_step=epoch+1)
-            fig.clf()
+                fig = plt_power(
+                    input[:, :skip_chan], output[:, skip_chan:skip_chan*2], target[:, skip_chan:skip_chan*2], #NOTE: using displacements only
+                    label=['in', 'out', 'tgt'],
+                    **args.misc_kwargs,
+                )
+                logger.add_figure('fig/train/power/lag', fig, global_step=epoch+1)
+                fig.clf()
             
-            #if epoch%10==0: #NOTE: this was added starting from lag2eul25 to save memory. actually i am removing it (starting from srdiff runs) since there is already the tb_plot_interval arg
-            crop_boxsize = cosmology.dis_not_in_place(args.boxsize * (args.crop*args.scale_factor / 1024)) #NOTE: hardcoded 1024
+                #if epoch%10==0: #NOTE: this was added starting from lag2eul25 to save memory. actually i am removing it (starting from srdiff runs) since there is already the tb_plot_interval arg
+                crop_boxsize = cosmology.dis_not_in_place(args.boxsize * (args.crop*args.scale_factor / 1024)) #NOTE: hardcoded 1024
 
-            fig = plt_pos_projections(
-                input[-1], output[-1, skip_chan:skip_chan+3], target[-1, skip_chan:skip_chan+3], #NOTE: using displacements only
-                boxsize=crop_boxsize,
-                Ng=input.shape[2],
-                labels=['in', 'out', 'tgt'],
-                **args.misc_kwargs,
-            )
-            logger.add_figure('fig/train/pos_proj', fig, global_step=epoch+1)
-            fig.clf()
+                fig = plt_pos_projections(
+                    input[-1], output[-1, skip_chan:skip_chan*2], target[-1, skip_chan:skip_chan*2], #NOTE: using displacements only
+                    boxsize=crop_boxsize,
+                    Ng=input.shape[2],
+                    labels=['in', 'out', 'tgt'],
+                    **args.misc_kwargs,
+                )
+                logger.add_figure('fig/train/pos_proj', fig, global_step=epoch+1)
+                fig.clf()
 
             #fig = plt_power(1.0,
             #    dis=[input, output[:, skip_chan:], target[:, skip_chan:]],

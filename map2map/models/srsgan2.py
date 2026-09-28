@@ -229,17 +229,50 @@ class ResBlock(nn.Module):
 if __name__ == '__main__':
     # test
     g = G(3, 3, 2)
-    d = D(8, 1, 2)
+    d = D(7, 1, 2)
 
-    #print number of parameters
+    print("D scale factor", d.scale_factor)
+
+    # print number of parameters
     print('G #params:', sum(p.numel() for p in g.parameters()))
     print('D #params:', sum(p.numel() for p in d.parameters()))
 
-    #test tensors
-    x = torch.randn(1, 3, 20, 20, 20)
-    y = g(x)
-    print('G output:', y.shape)
+    # ---------------------------------------------------------
+    # Test G
+    # ---------------------------------------------------------
+    print("\nGenerator test")
+    x = torch.randn(1, 3, 36, 36, 36)
+    y = x  # direct upsampling from the input
+    x = g.block0(x)
+    print("x shape after block0:", x.shape)
 
-    y = torch.randn(1, 8, 32, 32, 32)
-    z = d(y)
-    print('D output:', z.shape)
+    #y = None  # no direct upsampling from the input
+    for block in g.blocks:
+        x, y = block(x, y)
+    print('G output (x and y):', x.shape, y.shape)
+
+    # ---------------------------------------------------------
+    # Test D
+    # Input: batchsize=1, channels=3, 16x16x16
+    # ---------------------------------------------------------
+    x = torch.randn(1, 7, 32, 32, 32)
+
+    print('\nDiscriminator test:')
+    print('Input:', x.shape)
+
+    # block0
+    x = d.block0(x)
+    print('After block0:', x.shape)
+
+    # residual blocks
+    for i, block in enumerate(d.blocks):
+        x = block(x)
+        print(f'After residual block {i}:', x.shape)
+
+    # block9
+    x = d.block9(x)
+    print('After block9:', x.shape)
+
+    # average pool
+    x = d.pool(x)
+    print('After average pool:', x.shape)

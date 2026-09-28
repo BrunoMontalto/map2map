@@ -72,12 +72,12 @@ def read_block_with_periodic(arr, start, stop):
     print("start:", start)
     print("stop:", stop)
     N = arr.shape[1]
-    length = stop - start
+    length = stop[0] - start[0]
     if length <= 0:
         raise ValueError("stop must be > start")
-    ix = np.arange(start, start + length) % N
-    iy = np.arange(start, start + length) % N
-    iz = np.arange(start, start + length) % N
+    ix = np.arange(start[0], start[0] + length) % N
+    iy = np.arange(start[1], start[1] + length) % N
+    iz = np.arange(start[2], start[2] + length) % N
     block = wrapped_take_3d(arr, ix, iy, iz)
     print("block min:", block.min())
     print("block min:", block.max())
@@ -139,7 +139,7 @@ def _compute_density_colors_2d(xy_positions, nbins=200):
 
 
 
-def process_file(path, scale, crop_start, crop_stop, margin=20, boxsize=None, is_LR=False, original_lr_res=None):
+def process_file(path, scale, crop_start, crop_stop, sr_pad, offset, margin=20, boxsize=None, is_SR=False, original_lr_res=None):
     """
     scale: 1 for LR, 2 for HR
     crop_start & crop_end: crop starts from (crop_start*scale)^3 and ends at (crop_stop*scale)^3
@@ -151,36 +151,59 @@ def process_file(path, scale, crop_start, crop_stop, margin=20, boxsize=None, is
         raise ValueError(f"Array in {path} deve avere shape (3, N, N, N). Got {arr.shape}")
     N = arr.shape[1]
 
-    # Scale crop with scale argument
-    s = int(crop_start * scale)
-    e = int(crop_stop * scale)
+    lr_cell_size = boxsize / original_lr_res
+
+    offset = [np.floor(x/lr_cell_size) for x in offset]
+
+
+    crop_start = [x + crop_start for x in offset]
+    crop_stop = [x + crop_stop for x in offset]
 
     # Calculate range of allowed range of values accordingly to crop box size, scaled in cell units (boxsize / original_lr_res)
     # NOTE: boxsize is the original boxsize (should rename)
-    mins = 0 #boxsize / original_lr_res * (crop_start)
-    maxs = boxsize / original_lr_res * (crop_stop-crop_start)
+    mins = [lr_cell_size * (x) for x in crop_start]
+    maxs = [lr_cell_size * (x) for x in crop_stop]
+
+    if is_SR:
+            crop_start = [x-sr_pad for x in crop_start]
+            crop_stop = [x-sr_pad for x in crop_stop]
+
+    # Scale crop with scale argument
+    s = [int(x * scale) for x in crop_start]
+    e = [int(x * scale) for x in crop_stop]
+
+    
 
     print("mins:", mins)
     print("maxs:", maxs)
 
     # Read a bigger block (according to margin) to find particles that are allocated outside the crop but are inside the cropped volume
-    s2 = s - margin * scale
-    e2 = e + margin * scale
-    boxsize_scaled = boxsize * (crop_stop - crop_start + 2 * margin) / original_lr_res #scale boxsize accordingly to the new size
+    s2 = [x - margin * scale for x in s]
+    e2 = [x + margin * scale for x in e]
+    boxsize_scaled = boxsize * (crop_stop[0] - crop_start[0] + 2 * margin) / original_lr_res #scale boxsize accordingly to the new size
     print("boxsize_scaled:", boxsize_scaled)
     block2 = read_block_with_periodic(arr, s2, e2)
     if scale == 1:
-        pos_block2 = dis2posLR_average_downsample(block2, Ng_LR=(e2 - s2), Ng_HR=(e2 - s2) * 2, boxsize=boxsize_scaled)
+        pos_block2 = dis2posLR_average_downsample(block2, Ng_LR=(e2[0] - s2[0]), Ng_HR=(e2[0] - s2[0]) * 2, boxsize=boxsize_scaled)
     else:
-        pos_block2 = dis2pos(block2, Ng=(e2 - s2), boxsize=boxsize_scaled)
+        pos_block2 = dis2pos(block2, Ng=(e2[0] - s2[0]), boxsize=boxsize_scaled)
 
     pos_block2 = np.moveaxis(pos_block2, 0, -1).reshape(-1, 3)
 
+    #bring back to global coords:
+    cell_size = boxsize / (original_lr_res * scale)
+    block_origin = np.asarray(s2, dtype=float) * cell_size
+
+    pos_block2 += block_origin + (sr_pad*lr_cell_size if is_SR else 0)
+
+
+    for coord, name in zip(pos_block2[:3], ["x", "y", "z"]):
+        print(f"{name} range: [{coord.min()}, {coord.max()}]")
 
     mask = (
-        (pos_block2[:, 0] >= mins) & (pos_block2[:, 0] <= maxs) &
-        (pos_block2[:, 1] >= mins) & (pos_block2[:, 1] <= maxs) &
-        (pos_block2[:, 2] >= mins) & (pos_block2[:, 2] <= maxs)
+        (pos_block2[:, 0] >= mins[0]) & (pos_block2[:, 0] <= maxs[0]) &
+        (pos_block2[:, 1] >= mins[1]) & (pos_block2[:, 1] <= maxs[1]) &
+        (pos_block2[:, 2] >= mins[2]) & (pos_block2[:, 2] <= maxs[2])
     )
     selected = pos_block2[mask]
     return selected
@@ -209,13 +232,18 @@ def main():
     parser.add_argument('--file-lr', required=True, help='Percorso file LR (.npy/.npz)')
     parser.add_argument('--file-hr', required=True, help='Percorso file HR (.npy/.npz)')
     parser.add_argument('--file-sr', required=True, help='Percorso file SR (.npy/.npz)')
+    parser.add_argument('--sr-label', type=str, default="SR")
     parser.add_argument('--crop-field-start', type=int, required=True, help='Start index (int) in grid units (base/min resolution)')
+    parser.add_argument('--sr-pad', type=int, default=0, help='During inference, when the LR box is not periodic, it is required to crop it to avoid over-boundaries padding. This parameter compansates the consequent offset in the sr field.')
+    parser.add_argument('--offset', type=float, nargs=3, default=[0.0,0.0,0.0], help="Plot offset in Mpc/h")
     parser.add_argument('--crop-field-stop', type=int, required=True, help='Stop index (int) in grid units (base/min resolution)')
     parser.add_argument('--output-dir', required=True, help='Directory where to save the figure')
     parser.add_argument('--margin', type=int, default=20, help='Margin (cells) for the extended read; default 20')
     parser.add_argument('--nbins', type=int, default=200, help='Number of bins for 2D density estimate (per axis)')
     parser.add_argument('--original-boxsize', type=float, default=1000.0)
     parser.add_argument('--particle-size-hr', type=float, default=0.01)
+    parser.add_argument('--one-color', action="store_true")
+    parser.add_argument('--face-color', type=str, default='black')
     parser.add_argument('--alpha-hr', type=float, default=0.5)
     parser.add_argument('--particle-size-lr', type=float, default=0.08)
     parser.add_argument('--alpha-lr', type=float, default=1.0)
@@ -249,7 +277,7 @@ def main():
     results = {}
     for k, p in files.items():
         print(f"Processing {k} ({p}) with scale {scales[k]} ...")
-        sel = process_file(p, scale=scales[k], crop_start=args.crop_field_start, crop_stop=args.crop_field_stop, margin=args.margin, boxsize=args.original_boxsize, original_lr_res = args.original_lr_res)
+        sel = process_file(p, scale=scales[k], crop_start=args.crop_field_start, crop_stop=args.crop_field_stop,  sr_pad=args.sr_pad, is_SR=(k=='SR'), offset=args.offset,margin=args.margin, boxsize=args.original_boxsize, original_lr_res = args.original_lr_res)
         results[k] = sel
         print(f" -> selected {len(sel)} particles for {k}")
 
@@ -328,7 +356,7 @@ def main():
     nrows = 1 + len(zoom_boxes) + (1 if filament_box else 0)
     #fig, axs = plt.subplots(nrows, 3, constrained_layout=True)
     fig, axs = plt.subplots(nrows, 3, figsize=(15, 5.5 * nrows))
-    plt.tight_layout(pad=0.3, w_pad=0.1, h_pad=0.3)
+    plt.tight_layout(pad=5, w_pad=0.1, h_pad=0.3)
     if nrows == 2:
         axs = np.array(axs).reshape(nrows, 3)
 
@@ -338,9 +366,9 @@ def main():
     # First row
     for col, kind in enumerate(kinds):
         ax = axs[0, col]
-        ax.set_facecolor('black')
+        ax.set_facecolor(args.face_color)
         pos = results[kind]
-        ax.set_title(kind)
+        ax.set_title(args.sr_label if kind == 'SR' else kind)
         if pos.size != 0:
             xy = pos[:, :2]
             dens = compute_density_colors(pos, nbins=args.nbins)
@@ -348,7 +376,10 @@ def main():
             norm = (dens - dmin) / (dmax - dmin) if dmax != dmin else np.zeros_like(dens)
             s = args.particle_size_lr / 4 if kind == 'LR' else args.particle_size_hr / 4
             alpha = args.alpha_lr if kind == 'LR' else args.alpha_hr
-            sc = ax.scatter(xy[:, 0], xy[:, 1], c=norm, s=s, alpha=alpha, cmap='viridis', rasterized=True)
+            if args.one_color:
+                sc = ax.scatter(xy[:, 0], xy[:, 1], s=s, alpha=alpha, rasterized=True)
+            else:
+                sc = ax.scatter(xy[:, 0], xy[:, 1], c=norm, s=s, alpha=alpha, cmap='viridis', rasterized=True)
             sc_ref = sc if sc_ref is None else sc_ref
             ax.set_xlim(full_xlim)
             ax.set_ylim(full_ylim)
@@ -361,9 +392,9 @@ def main():
             if filament_box:
                 fxmin, fxmax, fymin, fymax = filament_box
                 rect = Rectangle((fxmin, fymin), fxmax - fxmin, fymax - fymin,
-                                 linewidth=1.5, edgecolor='orange', facecolor='none', linestyle='--')
+                                 linewidth=1.5, edgecolor='magenta', facecolor='none', linestyle='--')
                 ax.add_patch(rect)
-                ax.text(fxmin, fymax, 'filaments', color='orange', fontsize=9, va='bottom', ha='left')
+                ax.text(fxmin, fymax, 'filaments', color='magenta', fontsize=9, va='bottom', ha='left')
         else:
             ax.text(0.5, 0.5, 'No particles', ha='center', va='center', color='white')
         ax.set_aspect('equal')
@@ -378,8 +409,8 @@ def main():
     for i, (xmin, xmax, ymin, ymax) in enumerate(zoom_boxes, start=1):
         for col, kind in enumerate(kinds):
             axz = axs[i, col]
-            axz.set_facecolor('black')
-            axz.set_title(f'{kind} (zoom c{i})')
+            axz.set_facecolor(args.face_color)
+            axz.set_title(f'{(args.sr_label if kind == "SR" else kind)} (zoom c{i})')
             pos = results[kind]
             if pos.size != 0:
                 maskz = (pos[:, 0] >= xmin) & (pos[:, 0] <= xmax) & (pos[:, 1] >= ymin) & (pos[:, 1] <= ymax)
@@ -390,7 +421,10 @@ def main():
                     normz = (densz - dzmin) / (dzmax - dzmin) if dzmax != dzmin else np.zeros_like(densz)
                     sz = args.particle_size_lr * 4 if kind == 'LR' else args.particle_size_hr * 4
                     alphaz = args.alpha_lr if kind == 'LR' else args.alpha_hr
-                    axz.scatter(posz[:, 0], posz[:, 1], c=normz, s=sz, alpha=alphaz, cmap='viridis', rasterized=True)
+                    if args.one_color:
+                        axz.scatter(posz[:, 0], posz[:, 1], s=sz, alpha=alphaz, rasterized=True)
+                    else:
+                        axz.scatter(posz[:, 0], posz[:, 1], c=normz, s=sz, alpha=alphaz, cmap='viridis', rasterized=True)
                 else:
                     axz.text(0.5, 0.5, 'No particles in zoom', ha='center', va='center', color='white')
                 axz.set_xlim((xmin, xmax))
@@ -410,8 +444,8 @@ def main():
         (xmin, xmax, ymin, ymax) = filament_box
         for col, kind in enumerate(kinds):
             axz = axs[i, col]
-            axz.set_facecolor('black')
-            axz.set_title(f'{kind} (filaments zoom)')
+            axz.set_facecolor(args.face_color)
+            axz.set_title(f'{(args.sr_label if kind == "SR" else kind)} (filaments zoom)')
             pos = results[kind]
             if pos.size != 0:
                 maskz = (pos[:, 0] >= xmin) & (pos[:, 0] <= xmax) & (pos[:, 1] >= ymin) & (pos[:, 1] <= ymax)
@@ -422,7 +456,10 @@ def main():
                     normz = (densz - dzmin) / (dzmax - dzmin) if dzmax != dzmin else np.zeros_like(densz)
                     sz = args.particle_size_lr * 3 if kind == 'LR' else args.particle_size_hr * 3
                     alphaz = args.alpha_lr if kind == 'LR' else args.alpha_hr
-                    axz.scatter(posz[:, 0], posz[:, 1], c=normz, s=sz, alpha=alphaz, cmap='viridis', rasterized=True)
+                    if args.one_color:
+                        axz.scatter(posz[:, 0], posz[:, 1], s=sz, alpha=alphaz, rasterized=True)
+                    else:
+                        axz.scatter(posz[:, 0], posz[:, 1], c=normz, s=sz, alpha=alphaz, cmap='viridis', rasterized=True)
                 else:
                     axz.text(0.5, 0.5, 'No particles in zoom', ha='center', va='center', color='white')
                 axz.set_xlim((xmin, xmax))
@@ -431,9 +468,9 @@ def main():
             if col == 0:
                 axz.set_ylabel(r'$Y\ \mathrm{[h^{-1}\ Mpc]}$')
             axz.set_xlabel(r'$X\ \mathrm{[h^{-1}\ Mpc]}$')
-            axz.tick_params(color='orange', width=1)
+            axz.tick_params(color='magenta', width=1)
             for spine in axz.spines.values():
-                spine.set_edgecolor('orange')
+                spine.set_edgecolor('magenta')
                 spine.set_linewidth(1)
 
 

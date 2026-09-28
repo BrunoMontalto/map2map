@@ -11,6 +11,7 @@ import gc
 
 import hashlib
 
+print("pynbody version", pynbody.__version__)
 
 # used to generate a determistic seed based on the folder name
 def stable_hash(s):
@@ -47,14 +48,37 @@ def process_snapshot(folder_path, Ng_HR, Ng_LR, output_path_LR, output_path_HR, 
     #temporary#
 
     #load ../../lattice_id_order.npy
-    lattice_id_order = np.load('../../lattice_id_order.npy')
-    print('Loaded lattice_id_order.npy with shape:', lattice_id_order.shape, 'type:', type(lattice_id_order), 'dtype:', lattice_id_order.dtype)
+    lattice_id_order = np.load(args.lattice_id_order_file)
+    #print('Loaded lattice id order file with shape:', lattice_id_order.shape, 'type:', type(lattice_id_order), 'dtype:', lattice_id_order.dtype)
 
     ###########
     
     folder_name = os.path.basename(os.path.normpath(folder_path))
 
     s = pynbody.load(os.path.join(folder_path, 'snapdir_062', 'snap_062'))
+
+    print("Header data start")
+    for i, ff in enumerate(s._files):
+        h = ff.header
+        if not np.array_equal(h.NallHW, [0,2,0,0,0,0]):
+            print("HighWord diverso nel file", i, h.NallHW)
+
+        if h.npartTotal[1] != 0:
+            print("Unexpected npartTotal:", i, h.npartTotal)
+
+    tot = sum(int(ff.header.npart[1]) for ff in s._files)
+    print(type(tot), tot) #expected <class 'int'>, 8589934592 (for 2048^3 snap)
+
+    print("properties:", s.properties)
+
+    print("families:")
+    for fam in s.families():
+        particles = s[fam]  
+        print(f"{fam}: {len(particles)} particles, 3rd root: {round(len(particles) ** (1/3))}\n")
+
+    print("\nKeys:\n")
+    for key in s.loadable_keys():
+        print(f"{key}\n")#: {len(s[key])}\n")
 
     # use physical units
     if use_physical_units:
@@ -73,16 +97,18 @@ def process_snapshot(folder_path, Ng_HR, Ng_LR, output_path_LR, output_path_HR, 
 
     # convert boxsize to float32 and to Mpc/h
     boxsize = np.float32(boxsize) / 1000.0 # convert to Mpc a h**-1, assuming boxsize is in kpc a h**-1
-    print('Boxsize after conversion:', boxsize,'type:', type(boxsize))
+    print('Boxsize after conversion (in Mpc/h):', boxsize,'type:', type(boxsize))
 
-    pos_ = s['pos'].view(np.float32) # convert to float32 (test 8 and before don't do that)
-    # divide pos by 1000 to convert from kpc/h to Mpc/h, assuming pos is in kpc a h**-1
-    pos_ = pos_ / 1000.0 # convert to Mpc a h**-1
-    print('\nPositions shape:', pos_.shape, 'type:', type(pos_), 'dtype:', pos_.dtype, 'units:', pos_.units, 'min:', pos_.min(), 'max:', pos_.max())
+    if not args.no_pos:
+        pos_ = s['pos'].view(np.float32) # convert to float32 (test 8 and before don't do that)
+        # divide pos by 1000 to convert from kpc/h to Mpc/h, assuming pos is in kpc a h**-1
+        pos_ = pos_ / 1000.0 # convert to Mpc a h**-1
+        print('\nPositions shape:', pos_.shape, 'type:', type(pos_), 'dtype:', pos_.dtype, 'units:', pos_.units, 'min:', pos_.min(), 'max:', pos_.max())
 
-    vel_ = s['vel'].view(np.float32) # convert to float32 (test 8 and before don't do that)
-    
-    print('Velocities shape:', vel_.shape, 'type:', type(vel_), 'dtype:', vel_.dtype, 'units:', vel_.units, 'min:', vel_.min(), 'max:', vel_.max())
+    if not args.no_vel:
+        vel_ = s['vel'].view(np.float32) # convert to float32 (test 8 and before don't do that)
+        
+        print('Velocities shape:', vel_.shape, 'type:', type(vel_), 'dtype:', vel_.dtype, 'units:', vel_.units, 'min:', vel_.min(), 'max:', vel_.max())
 
 
     if use_iord:
@@ -100,11 +126,12 @@ def process_snapshot(folder_path, Ng_HR, Ng_LR, output_path_LR, output_path_HR, 
         print("Len iord:", len(pid_))
         
 
-        assert len(pos_) == len(vel_) == len(pid_), 'Positions, velocities and particle IDs must have the same length.'
+        assert (len(pos_) if not args.no_pos else len(pid_)) == (len(vel_) if not args.no_vel else len(pid_)) == len(pid_), 'Positions, velocities and particle IDs must have the same length.'
     else:
         pid_ = None
 
-        assert len(pos_) == len(vel_), 'Positions and velocities must have the same length.'
+        if not (args.no_pos or args.no_vel):
+            assert len(pos_) == len(vel_), 'Positions and velocities must have the same length.'
 
     
 
@@ -112,201 +139,145 @@ def process_snapshot(folder_path, Ng_HR, Ng_LR, output_path_LR, output_path_HR, 
 
     
 
-    Ng = round(len(pos_)** (1/3)) # number of particles per side of the grid
+    Ng = round((len(pos_) if not args.no_pos else len(vel_))** (1/3)) # number of particles per side of the grid
 
-    assert Ng == 1024 # in this case we know the number of particles per side of the grid is 1024, so we can assert it just in case
+    #assert Ng == 1024 # in this case we know the number of particles per side of the grid is 1024, so we can assert it just in case
     assert Ng % Ng_HR == 0 and Ng_HR <= Ng, 'Ng_HR must be a divisor of Ng and less or equal than Ng.'
     
     
     if use_iord:
-        # using iord
-        """
-        ######################### 1 #########################
-        #get indices that would sort pid_
-        #pid_ = np.argsort(pid_) #using this in test3. test2 is the same but without this line
-
-        #sort pid_ in ascending order
-        pid_ = np.sort(pid_) #using this in test5 (not in test3 or test2)
-
         
-        # get positions in iord order
-        pos = np.empty_like(pos_)
-        pos[pid_] = pos_
-        pos = pos.reshape(Ng, Ng, Ng, 3)
+        #get permutation that would recover the same order of ids (id_grid_flatten), assuming we know id_grid_flatten
+        lookup = np.empty(pid_.size + 1, dtype=np.uint64)
+        lookup[pid_] = np.arange(pid_.size, dtype=np.uint64)
 
-        # get velocities in iord order
-        vel = np.empty_like(vel_)
-        vel[pid_] = vel_
-        vel = vel.reshape(Ng, Ng, Ng, 3)
-        ########################################################
-        """
+        if not args.no_pos:
+            pos = np.empty_like(pos_)
 
-        if False:
-            ############################## 2 ##########################
+            chunk = 20_000_000 
 
-            #using this on test6 (without the previous subblock1). test 7 is the same as test6 but with subblock1
-            #test 8 is the same as test 7 but use sublock2
+            for i in range(0, len(lattice_id_order), chunk):
+                j = min(i + chunk, len(lattice_id_order))
 
-            """
-            ### subblock1 ###
-            # get positions in iord order
-            pos_sorted = np.empty_like(pos_)
-            pos_sorted[pid_] = pos_
-            del pos_ #added after test7
-            gc.collect() #added after test7
+                np.take(
+                    pos_,
+                    lookup[lattice_id_order[i:j]],
+                    axis=0,
+                    out=pos[i:j]
+                )
 
-            # get velocities in iord order
-            vel_sorted = np.empty_like(vel_)
-            vel_sorted[pid_] = vel_
-            del vel_ #added after test7
-            gc.collect() #added after test7
+            pos = pos.reshape(Ng, Ng, Ng, 3)
 
-            del vel_
-            #############
-            """
-            ### subblock2 ###
-            #use argsort to get the order of indices that would sort pid_
-            print("pos_[pid_[0]]:",pos_[pid_[0]]) #checking if this is the first particle position
-            print("pos_[pid_[-1]]:",pos_[pid_[-1]]) #checking if this is the last particle position
-            order = np.argsort(pid_)
-            #sort pid_ in ascending order
-            pid_ = pid_[order]
 
-            print("pid_[0] after sorting:", pid_[0]) #should be 0
-            print("pid_[-1] after sorting:", pid_[-1]) #should be len(pid_)-1
-
-            # reorder pos_ and vel_ according to order
-            pos_sorted = pos_[order]
-            vel_sorted = vel_[order]
-            ################
+        if not args.no_vel:
+            vel = np.empty_like(vel_)
             
+            chunk = 20_000_000 
 
-            iz = pid_ % Ng 
-            iy = (pid_ // Ng) % Ng
-            ix = pid_ // (Ng * Ng)
+            for i in range(0, len(lattice_id_order), chunk):
+                j = min(i + chunk, len(lattice_id_order))
 
-            pos = np.empty((Ng, Ng, Ng, 3), dtype=np.float32)
-            vel = np.empty((Ng, Ng, Ng, 3), dtype=np.float32)
+                np.take(
+                    vel_,
+                    lookup[lattice_id_order[i:j]],
+                    axis=0,
+                    out=pos[i:j]
+                )
 
-            pos[ix, iy, iz, :] = pos_sorted #pos_sorted for test7,test8; pos_ for test6
-            vel[ix, iy, iz, :] = vel_sorted #vel_sorted for test7,test8; vel_ for test6
-            #############################################
-        
-        if True:
-            ########################### 3 #########################
+            vel = vel.reshape(Ng, Ng, Ng, 3)
 
-            #test 9-10 (works well but slow)
-            
-            #get permutation that would recover the same order of ids (id_grid_flatten), assuming we know id_grid_flatten
-            val_to_idx = {val: idx for idx, val in enumerate(pid_)}
-            inv_perm = np.array([val_to_idx[val] for val in lattice_id_order]) #TODO: dtype?
-            print('inv_perm shape:', inv_perm.shape, 'type:', type(inv_perm), 'dtype:', inv_perm.dtype)
+        del lookup, lattice_id_order
+        gc.collect()
 
-            pos = pos_[inv_perm].reshape(Ng, Ng, Ng, 3)
-            vel = vel_[inv_perm].reshape(Ng, Ng, Ng, 3)
 
-            del inv_perm, val_to_idx, lattice_id_order
-            gc.collect()
-
-            #######################################################
-
-        if False:
-            ######################### 4 #########################
-            #faster but uses more memory
-
-            pid_ = id_to_linear_index(pid_, Ng, tile_fac)
-            inv_perm = np.argsort(pid_)
-            pos = pos_[inv_perm].reshape(Ng, Ng, Ng, 3)
-            vel = vel_[inv_perm].reshape(Ng, Ng, Ng, 3)
-            del inv_perm, pid_
-            gc.collect()
-            #####################################################
         
 
     else:
         # without using iord
-        pos = pos_.reshape(Ng, Ng, Ng, 3)
-        vel = vel_.reshape(Ng, Ng, Ng, 3)
+        if not args.no_pos:
+            pos = pos_.reshape(Ng, Ng, Ng, 3)
+        if not args.no_vel:
+            vel = vel_.reshape(Ng, Ng, Ng, 3)
 
-    del pos_, vel_, pid_
+    if not args.no_pos:
+        del pos_
+    if not args.no_vel:
+            del vel_
+    del pid_
 
-    # convert positions to displacement field
-    if not use_positions:
-        dis = pos2dis(pos, boxsize, Ng)
-    else:
-        print('Using positions as input, skipping conversion to displacements.')
-        dis = pos #NOTE: keeping the variable name "dis"
-    del pos
+    if not args.no_pos:
+        # convert positions to displacement field
+        if not use_positions:
+            dis = pos2dis(pos, boxsize, Ng)
+        else:
+            print('Using positions as input, skipping conversion to displacements.')
+            dis = pos #NOTE: keeping the variable name "dis"
+        del pos
 
-    dis = dis.astype('f4')
-    vel = vel.astype('f4')
+        dis = dis.astype('f4')
+        # to channel first
+        dis = np.moveaxis(dis,-1,0)
+        # concatenate displacement and velocity fields
+        dis = dis.astype('f4')
+
+    if not args.no_vel:
+        vel = vel.astype('f4')
     
-    # to channel first
-    dis = np.moveaxis(dis,-1,0) 
-    vel = np.moveaxis(vel,-1,0)
+        # to channel first
+        vel = np.moveaxis(vel,-1,0)
 
-    # NOTE: (no normalization)
+        # NOTE: (no normalization)
 
-    # concatenate displacement and velocity fields
-    dis = dis.astype('f4')
-    vel = vel.astype('f4')
+        # concatenate displacement and velocity fields
+        vel = vel.astype('f4')
 
     # pairs generation
 
     # HR
     if Ng != Ng_HR:
         factor = Ng // Ng_HR
-        dis_HR = downsampling_function(dis, factor)
-        vel_HR = downsampling_function(vel, factor)
+        if not args.no_pos: dis_HR = downsampling_function(dis, factor)
+        if not args.no_vel: vel_HR = downsampling_function(vel, factor)
     else:
         print('No downsampling needed for HR data, using original resolution.')
-        dis_HR = dis
-        vel_HR = vel
+        if not args.no_pos: dis_HR = dis
+        if not args.no_vel: vel_HR = vel
 
-    assert dis_HR.shape == (3, Ng_HR, Ng_HR, Ng_HR), f'dis_HR shape is {dis_HR.shape}, expected {(3, Ng_HR, Ng_HR, Ng_HR)}'
-    assert vel_HR.shape == (3, Ng_HR, Ng_HR, Ng_HR), f'vel_HR shape is {vel_HR.shape}, expected {(3, Ng_HR, Ng_HR, Ng_HR)}'
+    if not args.no_pos: assert dis_HR.shape == (3, Ng_HR, Ng_HR, Ng_HR), f'dis_HR shape is {dis_HR.shape}, expected {(3, Ng_HR, Ng_HR, Ng_HR)}'
+    if not args.no_vel: assert vel_HR.shape == (3, Ng_HR, Ng_HR, Ng_HR), f'vel_HR shape is {vel_HR.shape}, expected {(3, Ng_HR, Ng_HR, Ng_HR)}'
 
     # LR
     factor = Ng_HR // Ng_LR
-    dis_LR = downsampling_function(dis_HR, factor)
-    vel_LR = downsampling_function(vel_HR, factor)
+    if not args.no_pos: dis_LR = downsampling_function(dis_HR, factor)
+    if not args.no_vel: vel_LR = downsampling_function(vel_HR, factor)
 
-    assert dis_LR.shape == (3, Ng_LR, Ng_LR, Ng_LR), f'dis_LR shape is {dis_LR.shape}, expected {(3, Ng_LR, Ng_LR, Ng_LR)}'
-    assert vel_LR.shape == (3, Ng_LR, Ng_LR, Ng_LR), f'vel_LR shape is {vel_LR.shape}, expected {(3, Ng_LR, Ng_LR, Ng_LR)}'
+    if not args.no_pos: assert dis_LR.shape == (3, Ng_LR, Ng_LR, Ng_LR), f'dis_LR shape is {dis_LR.shape}, expected {(3, Ng_LR, Ng_LR, Ng_LR)}'
+    if not args.no_vel: assert vel_LR.shape == (3, Ng_LR, Ng_LR, Ng_LR), f'vel_LR shape is {vel_LR.shape}, expected {(3, Ng_LR, Ng_LR, Ng_LR)}'
 
 
 
     # save to output folder
 
-    """
-    # HR
-    hr_folder = os.path.join(output_path, 'HR')
-    np.save(os.path.join(hr_folder, f"{folder_name}.npy"), catnorm_HR)
-
-    # LR
-    lr_folder = os.path.join(output_path, 'LR')
-    np.save(os.path.join(lr_folder, f"{folder_name}.npy"), catnorm_LR)
-    """
-
-    #save the first 3 channels (displacement) and the last 3 channels (velocity) separately (add a suffix to the filename)
-
-    #print ranges
-    print(f'Displacement HR range: min {dis_HR.min()}, max {dis_HR.max()}')
-    print(f'Velocity HR range: min {vel_HR.min()}, max {vel_HR.max()}')
-    print(f'Displacement LR range: min {dis_LR.min()}, max {dis_LR.max()}')
-    print(f'Velocity LR range: min {vel_LR.min()}, max {vel_LR.max()}')
-
     #HR
     os.makedirs(output_path_HR, exist_ok=True)
-    np.save(os.path.join(output_path_HR, f'{folder_name}_dis.npy'), dis_HR)
-    np.save(os.path.join(output_path_HR, f'{folder_name}_vel.npy'), vel_HR)
-
     #LR
     os.makedirs(output_path_LR, exist_ok=True)
-    np.save(os.path.join(output_path_LR, f'{folder_name}_dis.npy'), dis_LR)
-    np.save(os.path.join(output_path_LR, f'{folder_name}_vel.npy'), vel_LR)
+    
+    #print ranges
+    if not args.no_pos:
+        print(f'Displacement HR range: min {dis_HR.min()}, max {dis_HR.max()}')
+        print(f'Displacement LR range: min {dis_LR.min()}, max {dis_LR.max()}')
+        np.save(os.path.join(output_path_HR, f'{folder_name}_dis.npy'), dis_HR)
+        np.save(os.path.join(output_path_LR, f'{folder_name}_dis.npy'), dis_LR)
 
-    del dis, vel, dis_HR, dis_LR, vel_HR, vel_LR
+        del dis, dis_HR, dis_LR
+    if not args.no_vel:
+        print(f'Velocity HR range: min {vel_HR.min()}, max {vel_HR.max()}')
+        print(f'Velocity LR range: min {vel_LR.min()}, max {vel_LR.max()}') 
+        np.save(os.path.join(output_path_HR, f'{folder_name}_vel.npy'), vel_HR)
+        np.save(os.path.join(output_path_LR, f'{folder_name}_vel.npy'), vel_LR)
+
+        del vel, vel_HR, vel_LR
     del s
 
     # free resources
@@ -343,6 +314,7 @@ if __name__ == "__main__":
     parser.add_argument('--is-test-data', action='store_true', help='Specify if the input data is test data. Default is False (train data).')
 
     parser.add_argument('--output-folder', type=str, required=True, help='Output folder for processed data.')
+    parser.add_argument('--lattice-id-order-file', type=str, required=True, help='')
     parser.add_argument('--Ng-HR', type=int, required = True, help='Number of particles per side of the HR grid.')
     parser.add_argument('--Ng-LR', type=int, required=True, help='Number of particles per side of the LR grid.')
 
@@ -359,6 +331,11 @@ if __name__ == "__main__":
 
     # add "use_iord" argument
     parser.add_argument('--use-iord', action='store_true', help='Use iord to order the particles. Default is False.')
+
+    parser.add_argument('--no-pos', action='store_true')
+    parser.add_argument('--no-vel', action='store_true')
+
+    #parser.add_argument('--crop', default = 0)
 
     parser.add_argument('--delete-files', action='store_true', help='Delete original snapshot files after processing.')
     args = parser.parse_args()
@@ -385,17 +362,7 @@ if __name__ == "__main__":
     
 
 
-    print(f'Input pattern: {args.input_pattern}')
-    print(f'Is test data: {args.is_test_data}')
-    print(f'Output folder: {args.output_folder}')
-    print(f'HR Ng: {args.Ng_HR}')
-    print(f'LR Ng: {args.Ng_LR}')
-    print(f'Tiling factor: {args.tile_fac}')
-    print(f'Downsampling method: {args.downsampling_method}')
-    print(f'Use positions: {args.use_positions}')
-    print(f'Use physical units: {args.use_physical_units}')
-    print(f'Use iord: {args.use_iord}')
-    print(f'Delete original files after processing: {args.delete_files}')
+    print(vars(args))
 
     print(f'\n-scale factor: {args.Ng_HR // args.Ng_LR}\n')
 

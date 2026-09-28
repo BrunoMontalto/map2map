@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .lag2eul import lag2eul
 from .power import power
+import numpy as np
 
 def softbincount(x, weights, max_bin=None): #TODO temperature
     bins = torch.arange(1, max_bin + 1, device=x.device)  # list of bins [1, 2, ..., max_bin]
@@ -76,15 +77,26 @@ def power_differentiable(x):
 
 
 
-def power_loss(x, y):
+def power_loss(x, y, dimensionless = False, cut=0):
     """Differentiable power spectrum loss between x and y.
 
     Args:
         x: Tensor of shape (B, C, H, W) or (B, C, D, H, W)
         y: Tensor of shape (B, C, H, W) or (B, C, D, H, W)
     """
-    _, P_x, _ = power_differentiable(x)
+    kk, P_x, _ = power_differentiable(x)
     _, P_y, _ = power_differentiable(y)
+
+
+    if cut > 0:
+        kk = kk[cut:]
+        P_x = P_x[cut:]
+        P_y = P_y[cut:]
+
+    if dimensionless:
+        P_x = (kk**3 * P_x) / (2 * np.pi**2)
+        P_y = (kk**3 * P_y) / (2 * np.pi**2)
+
 
     #normalize power spectra
     P_x = P_x / (P_x.sum() + 1e-8)
@@ -115,24 +127,32 @@ def power_loss_non_diff(x, y):
     return loss
 
 class PowerLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, dimensionless=False, cut = 0):
         super().__init__()
+        self.dimensionless = dimensionless
+        self.cut=cut
 
     def forward(self, x, y):
-        return power_loss(x, y)
+        return power_loss(x, y, dimensionless=self.dimensionless, cut=self.cut)
 
 class PowerLossL2E(nn.Module):
-    def __init__(self, boxsize=1000.0, meshsize = 1024, mesh_up_fac=2):
+    def __init__(self, boxsize=1000.0, meshsize = 1024, mesh_up_fac=2, dimensionless = False, cut = 0):
         super().__init__()
         self.mesh_up_fac = mesh_up_fac
         self.boxsize = boxsize
         self.meshsize = meshsize
+        self.dimensionless = dimensionless
+        self.cut=cut
 
-    def forward(self, x, y):
+    def forward(self, x, y, x_given=False): #NOTE: x_given feature unused
         # Convert from lagrangian to eulerian space
-        x = lag2eul(x,  boxsize=self.boxsize, eul_scale_factor=self.mesh_up_fac, meshsize=self.meshsize)[0]
+        if not x_given:
+            x = lag2eul(x,  boxsize=self.boxsize, eul_scale_factor=self.mesh_up_fac, meshsize=self.meshsize)[0]
         y = lag2eul(y,  boxsize=self.boxsize, eul_scale_factor=self.mesh_up_fac, meshsize=self.meshsize)[0]
-        return power_loss(x, y)
+        
+        return power_loss(x, y, dimensionless = self.dimensionless, cut=self.cut)
+        
+        
     
 class LossL2E(nn.Module):
     def __init__(self, boxsize=1000.0, meshsize = 1024, mesh_up_fac=2):

@@ -74,9 +74,9 @@ def add_common_args(parser):
             help='(generator) model')
     parser.add_argument('--criterion', default='MSELoss', type=str,
             help='loss function')
-    parser.add_argument('--load-state', default=ckpt_link, type=str,
+    parser.add_argument('--load-state', default=None, type=str,
             help='path to load the states of model, optimizer, rng, etc. '
-            'Default is the checkpoint. '
+            'Use "!last" to load the last state in the specified output states folder. '
             'Start from scratch in case of empty string or missing checkpoint')
     parser.add_argument('--load-state-non-strict', action='store_false',
             help='allow incompatible keys when loading model states',
@@ -110,6 +110,13 @@ def add_common_args(parser):
     #add argument for distributed training:
     parser.add_argument('--not-distributed', action='store_true',
             help='disable distributed training. Default is False')
+    
+    parser.add_argument('--radio', action='store_true',
+            help='enable if using radio data')
+    
+    #add argument for boxsize (for lag2eul)
+    parser.add_argument('--boxsize', type=float, default=1000.,
+                        help='box size in Mpc/h for lag2eul')
 
 def add_train_args(parser):
     add_common_args(parser)
@@ -225,10 +232,6 @@ def add_train_args(parser):
 
     parser.add_argument('--meshsize', type=int, default=1024,
                             help='meshsize for lag2eul')
-    
-    #add argument for boxsize (for lag2eul)
-    parser.add_argument('--boxsize', type=float, default=1000.,
-                        help='box size in Mpc/h for lag2eul')
 
     parser.add_argument('--always-condition-on-hr-l2e', action='store_true', help ='flag to always condition the discriminator on the high resolution (target) density field')
 
@@ -257,6 +260,11 @@ def add_train_args(parser):
     #add argument for criterion loss after adv starts
     parser.add_argument('--criterion-adv-weight', default=0, type=float,
             help='weight for criterion loss after adversarial training starts')
+    
+    parser.add_argument('--cut-first-n-pk-values', type=int, default=0, help='Exclude the first n values from the spectrum')
+    parser.add_argument('--dimensionless-pk', action='store_true', help='Use dimensionless power spectrum if enabled')
+    parser.add_argument('--pk-fix', action='store_true', help='Use dimensionless power spectrum if enabled') #TODO: implement to fix k and p(k) scales to match nbodykit pks (scale should actually be irrelevant for loss calculation)
+
 
     #srdiff
     parser.add_argument('--srdiff', action='store_true')
@@ -312,6 +320,9 @@ def add_test_args(parser):
             help='save output fields to disk')
     
     parser.add_argument('--suffix', type=str, default="")
+
+    parser.add_argument('--plot-projs', action='store_true')
+    parser.add_argument('--plot-path', type=str)
 
 def add_estimate_gpu_mem_args(parser):
     add_common_args(parser)
